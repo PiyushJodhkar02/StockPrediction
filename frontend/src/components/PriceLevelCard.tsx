@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { TriangleAlert, TrendingDown, TrendingUp, Target, ArrowDownToLine, Minus, ChevronDown, ChevronUp } from 'lucide-react';
+import { TriangleAlert, TrendingDown, TrendingUp, Minus, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface PriceLevels {
   atrValue: number | null;

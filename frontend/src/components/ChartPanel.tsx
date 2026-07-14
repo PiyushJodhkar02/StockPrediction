@@ -63,13 +63,13 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
 
     const sma20Series = chart.addSeries(LineSeries, {
       color: T.brass,
-      lineWidth: 1.5,
+      lineWidth: 2,
       crosshairMarkerVisible: false,
     });
 
     const sma50Series = chart.addSeries(LineSeries, {
       color: "#6C7A93",
-      lineWidth: 1.5,
+      lineWidth: 2,
       lineStyle: 2,
       crosshairMarkerVisible: false,
     });
