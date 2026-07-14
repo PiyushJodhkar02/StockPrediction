@@ -1,0 +1,49 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Quote {
+  id        String   @id @default(uuid())
+  symbol    String
+  date      String   // ISO date string e.g., "2024-01-01"
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([symbol, date])
+  @@index([symbol, date(sort: Desc)])
+}
+
+model AnalysisCache {
+  id                 String   @id @default(uuid())
+  symbol             String
+  date               String   // ISO date string
+  signalSnapshotJson String   // JSON string of the rule-based signal at the time of analysis
+  narrativeText      String
+  createdAt          DateTime @default(now())
+
+  @@unique([symbol, date])
+}
+
+model SignalCache {
+  id         String   @id @default(uuid())
+  symbol     String
+  date       String
+  signalJson String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([symbol, date])
+}
