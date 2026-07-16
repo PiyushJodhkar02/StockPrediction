@@ -12,17 +12,25 @@ import { ScoringParams, DEFAULT_SCORING_PARAMS } from '../engine/scoring';
 const router = express.Router();
 const marketProvider = new YahooFinanceProvider();
 
-const paramsCache = new Map<string, { params: ScoringParams; winRate: number; date: string }>();
+const paramsCache = new Map<string, { params: ScoringParams; winRate: number; date: string; asOfDate?: string | undefined }>();
 
-function getOptimalParams(symbol: string, quotes: any[]): { params: ScoringParams, winRate: number } {
+function filterQuotesByDate(quotes: any[], targetDate?: string) {
+  if (!targetDate) return quotes;
+  return quotes.filter(q => {
+    const d = q.date instanceof Date ? q.date.toISOString().split('T')[0] : String(q.date).split('T')[0];
+    return d <= targetDate;
+  });
+}
+
+function getOptimalParams(symbol: string, quotes: any[], asOfDate?: string): { params: ScoringParams, winRate: number } {
   const today = new Date().toISOString().slice(0, 10);
   const cached = paramsCache.get(symbol);
-  if (cached && cached.date === today) {
+  if (cached && cached.date === today && cached.asOfDate === asOfDate) {
     return { params: cached.params, winRate: cached.winRate };
   }
   const opt = optimizeParams(quotes as any);
   const bestParams = opt.quality > 0 ? opt.params : DEFAULT_SCORING_PARAMS;
-  paramsCache.set(symbol, { params: bestParams, winRate: opt.winRate, date: today });
+  paramsCache.set(symbol, { params: bestParams, winRate: opt.winRate, date: today, asOfDate });
   return { params: bestParams, winRate: opt.winRate };
 }
 
@@ -52,52 +60,35 @@ router.get('/search', async (req, res) => {
   }
 });
 
-router.get('/quotes/:symbol', async (req, res) => {
-  try {
-    const symbol = req.params.symbol.toUpperCase();
-    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
-
-    const quotes = await marketProvider.getQuotes(symbol);
-    const withIndicators = computeIndicators(quotes);
-    res.json(withIndicators);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get('/signal/:symbol', async (req, res) => {
+router.get('/dashboard/:symbol', async (req, res) => {
   try {
     const symbol = (req.params.symbol as string).toUpperCase();
     if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
 
-    const quotes = await marketProvider.getQuotes(symbol);
-    if (quotes.length < 2) return res.status(400).json({ error: "Not enough data" });
+    let quotes = await marketProvider.getQuotes(symbol);
+    quotes = filterQuotesByDate(quotes, req.query.date as string);
+    if (quotes.length < 55) return res.status(400).json({ error: "Not enough data" });
     
     const withIndicators = computeIndicators(quotes);
-    if (withIndicators.length < 2) return res.status(400).json({ error: "Not enough data" });
-    const { params, winRate } = getOptimalParams(symbol, quotes);
+    const { params, winRate } = getOptimalParams(symbol, quotes, req.query.date as string);
     const latest = withIndicators[withIndicators.length - 1] as any;
     const prev = withIndicators[withIndicators.length - 2] as any;
     
-    const signal = scoreDay(latest, prev, params);
-    res.json({ ...signal, historicalWinRate: winRate });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    // Single source of truth for signal
+    const signalPayload = scoreDay(latest, prev, params);
+    const signalWithWinRate = { ...signalPayload, historicalWinRate: winRate };
 
-router.get('/backtest/:symbol', async (req, res) => {
-  try {
-    const symbol = (req.params.symbol as string).toUpperCase();
-    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
-
-    const quotes = await marketProvider.getQuotes(symbol);
-    const withIndicators = computeIndicators(quotes);
-    if (withIndicators.length < 55) return res.status(400).json({ error: "Not enough data for backtest" });
-    
-    const { params } = getOptimalParams(symbol, quotes);
     const backtest = runBacktest(withIndicators as any, params);
-    res.json(backtest);
+    
+    // Pass the exact same signal evaluation to levels
+    const levels = computePriceLevels(quotes as any, signalPayload.signal);
+
+    res.json({
+      quotes: withIndicators,
+      signal: signalWithWinRate,
+      backtest,
+      levels
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -108,12 +99,13 @@ router.post('/analysis/:symbol', analysisLimiter, async (req, res) => {
     const symbol = (req.params.symbol as string).toUpperCase();
     if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
 
-    const quotes = await marketProvider.getQuotes(symbol);
+    let quotes = await marketProvider.getQuotes(symbol);
+    quotes = filterQuotesByDate(quotes, req.query.date as string);
     if (quotes.length < 2) return res.status(400).json({ error: "Not enough data" });
     
     const withIndicators = computeIndicators(quotes);
     if (withIndicators.length < 2) return res.status(400).json({ error: "Not enough data" });
-    const { params } = getOptimalParams(symbol, quotes);
+    const { params } = getOptimalParams(symbol, quotes, req.query.date as string);
     const latest = withIndicators[withIndicators.length - 1] as any;
     const prev = withIndicators[withIndicators.length - 2] as any;
     const signal = scoreDay(latest, prev, params);
@@ -122,29 +114,6 @@ router.post('/analysis/:symbol', analysisLimiter, async (req, res) => {
     
     const analysis = await generateAnalysis(symbol, latest.close, signal, recentPrices);
     res.json(analysis);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get('/levels/:symbol', async (req, res) => {
-  try {
-    const symbol = (req.params.symbol as string).toUpperCase();
-    if (!isValidSymbol(symbol)) return res.status(400).json({ error: 'Invalid symbol format' });
-
-    const quotes = await marketProvider.getQuotes(symbol);
-    if (quotes.length < 2) return res.status(400).json({ error: 'Not enough data' });
-
-    const withIndicators = computeIndicators(quotes);
-    if (withIndicators.length < 2) return res.status(400).json({ error: "Not enough data" });
-    const { params } = getOptimalParams(symbol, quotes);
-    const latest = withIndicators[withIndicators.length - 1] as any;
-    const prev = withIndicators[withIndicators.length - 2] as any;
-    const { signal } = scoreDay(latest, prev, params);
-
-    // priceLevels needs OHLCV rows (quotes has open/high/low/close/date)
-    const levels = computePriceLevels(quotes as any, signal);
-    res.json(levels);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

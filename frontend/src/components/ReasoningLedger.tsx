@@ -33,13 +33,13 @@ export default function ReasoningLedger({ analysis }: ReasoningLedgerProps) {
         {analysis.signal}
       </div>
 
-      <div className="mt-3.5 mb-[18px]">
-        <div className="flex justify-between font-mono text-[11px] text-ink-muted mb-1.5">
-          <span>Confidence</span><span>{analysis.confidence}%</span>
+      <div className="mb-4">
+        <div className="flex justify-between font-mono text-[10px] text-ink-muted mb-1">
+          <span>Rule Agreement</span><span>{Math.abs(analysis.score)}/6 indicators ({analysis.confidence}%)</span>
         </div>
         <div className="h-1.5 bg-panel-raised rounded overflow-hidden">
           <div 
-            className="h-full rounded" 
+            className="h-full rounded transition-all" 
             style={{ width: `${analysis.confidence}%`, background: cfg.color }} 
           />
         </div>

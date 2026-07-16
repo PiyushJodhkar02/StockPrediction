@@ -11,6 +11,12 @@ export interface PriceLevels {
   resistance: number | null;
   entryZone: { upper: number; lower: number } | null;
   dataTimestamp: string;
+  // Trade Card fields
+  buyAbove: number | null;
+  target1: number | null;
+  target2: number | null;
+  stopLoss: number | null;
+  stopLossStatus: 'active' | 'hit' | null;
 }
 
 export interface PositionState {
@@ -105,12 +111,54 @@ export function computePriceLevels(rows: OHLCVRow[], signal: string): PriceLevel
     entryZone = { upper: currentPrice, lower: +lower.toFixed(2) };
   }
 
+  // ── Trade Card fields ────────────────────────────────────────────────────
+  // buyAbove: single trigger price for BUY signal (support if within 2%, else current price)
+  let buyAbove: number | null = null;
+  if (signal === 'BUY') {
+    buyAbove = support != null && Math.abs(currentPrice - support) / currentPrice <= 0.02
+      ? +support.toFixed(2)
+      : +currentPrice.toFixed(2);
+  }
+
+  // target1: conservative near-term target = current + 1.0 × ATR
+  const target1 = latestAtr != null
+    ? +(currentPrice + latestAtr * 1.0).toFixed(2)
+    : null;
+
+  // target2: nearest resistance above current price, OR current + 2.5×ATR — whichever is closer
+  let target2: number | null = null;
+  if (latestAtr != null) {
+    const atrTarget = +(currentPrice + latestAtr * 2.5).toFixed(2);
+    if (resistance != null && resistance > currentPrice) {
+      // Pick whichever is a smaller distance from current price
+      const resistanceDist = resistance - currentPrice;
+      const atrDist = atrTarget - currentPrice;
+      target2 = resistanceDist <= atrDist ? +resistance.toFixed(2) : atrTarget;
+    } else {
+      target2 = atrTarget;
+    }
+  }
+
+  // stopLoss: current − 1.5 × ATR (same multiplier as fixedStopLoss in position analysis)
+  const stopLoss = latestAtr != null
+    ? +(currentPrice - latestAtr * 1.5).toFixed(2)
+    : null;
+
+  // stopLossStatus: "hit" if current price has already dropped below the stop
+  const stopLossStatus: 'active' | 'hit' | null =
+    stopLoss != null ? (currentPrice < stopLoss ? 'hit' : 'active') : null;
+
   return {
     atrValue: latestAtr != null ? +latestAtr.toFixed(4) : null,
     support: support != null ? +support.toFixed(2) : null,
     resistance: resistance != null ? +resistance.toFixed(2) : null,
     entryZone,
     dataTimestamp,
+    buyAbove,
+    target1,
+    target2,
+    stopLoss,
+    stopLossStatus,
   };
 }
 

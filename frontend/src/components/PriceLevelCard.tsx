@@ -29,6 +29,7 @@ interface PriceLevelCardProps {
   symbol: string;
   levels: PriceLevels | null;
   signal: any;
+  mode?: 'live' | 'simulation';
 }
 
 const T = { buy: '#4C9A78', sell: '#C1543B', brass: '#C98A2C', inkMuted: '#8A93A6' };
@@ -69,7 +70,7 @@ function LevelTile({
   );
 }
 
-export default function PriceLevelCard({ symbol, levels, signal }: PriceLevelCardProps) {
+export default function PriceLevelCard({ symbol, levels, signal, mode = 'live' }: PriceLevelCardProps) {
   const [position, setPosition] = useState<PositionState | null>(() => {
     try { const s = localStorage.getItem(`position:${symbol}`); return s ? JSON.parse(s) : null; }
     catch { return null; }
@@ -144,9 +145,8 @@ export default function PriceLevelCard({ symbol, levels, signal }: PriceLevelCar
           )}
         </div>
 
-        <div className="flex gap-2 items-center flex-wrap">
-          {/* Position badge if open */}
-          {posAnalysis && (
+        <div className="flex items-center gap-2">
+          {mode === 'live' && posAnalysis && (
             <div
               className="font-mono text-xs font-semibold px-3 py-1 rounded-full border flex items-center gap-1.5"
               style={{
@@ -163,20 +163,22 @@ export default function PriceLevelCard({ symbol, levels, signal }: PriceLevelCar
             </div>
           )}
 
-          {!position ? (
-            <button
-              onClick={() => setShowEntryForm(v => !v)}
-              className="font-mono text-[10px] border border-brass/50 text-brass rounded px-2.5 py-1 hover:bg-[#C98A2C15] transition-colors flex items-center gap-1"
-            >
-              + Track position {showEntryForm ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-            </button>
-          ) : (
-            <button
-              onClick={clearPosition}
-              className="font-mono text-[10px] border border-sell/50 text-sell rounded px-2.5 py-1 hover:bg-sell-dim transition-colors"
-            >
-              Close position
-            </button>
+          {mode === 'live' && (
+            !position ? (
+              <button
+                onClick={() => setShowEntryForm(v => !v)}
+                className="font-mono text-[10px] border border-brass/50 text-brass rounded px-2.5 py-1 hover:bg-[#C98A2C15] transition-colors flex items-center gap-1"
+              >
+                + Track position {showEntryForm ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              </button>
+            ) : (
+              <button
+                onClick={clearPosition}
+                className="font-mono text-[10px] border border-sell/50 text-sell rounded px-2.5 py-1 hover:bg-sell-dim transition-colors"
+              >
+                Close position
+              </button>
+            )
           )}
         </div>
       </div>

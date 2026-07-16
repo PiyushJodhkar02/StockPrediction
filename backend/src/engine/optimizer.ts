@@ -78,8 +78,8 @@ export function optimizeParams(rawQuotes: OHLCVRow[], lookbackDays = 756): Optim
   // Parameter grid — deliberately kept small to avoid overfitting
   const rsiBuyThresholds   = [25, 30, 35];
   const rsiSellThresholds  = [65, 70, 75];
-  const buyScoreThresholds  = [2, 3];
-  const sellScoreThresholds = [2, 3];
+  const buyScoreThresholds  = [3];
+  const sellScoreThresholds = [3];
 
   let best: OptimizationResult = {
     params: { rsiBuyThreshold: 30, rsiSellThreshold: 70, buyScoreThreshold: 3, sellScoreThreshold: 3 },
