@@ -45,22 +45,47 @@ export default function App() {
   const [levels, setLevels] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [dataSource, setDataSource] = useState("live");
-  const [range, setRange] = useState<'1M'|'3M'|'6M'|'1Y'|'3Y'|'5Y'>('1Y');
+  const [range, setRange] = useState<'1D'|'1W'|'1M'|'3M'|'6M'|'1Y'|'3Y'|'5Y'>('1Y');
   const [notes, setNotes] = useState<string>('');
   const [bottomTab, setBottomTab] = useState<'trade'|'levels'|'backtest'>('trade');
   
   // Simulation Mode states
   const [globalMode, setGlobalMode] = useState<'live'|'simulation'>('live');
   const [simulationDate, setSimulationDate] = useState<string>(() => {
+    // Return today's date in local time zone (YYYY-MM-DD)
     const d = new Date();
-    d.setMonth(d.getMonth() - 1);
-    return d.toISOString().split('T')[0];
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
   });
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  // Intraday Playback state
+  const [intradayQuotes, setIntradayQuotes] = useState<any[]>([]);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  
+  // Live Intraday state
+  const [liveIntraday, setLiveIntraday] = useState<any[]>([]);
+
+  useEffect(() => {
+    let id: any;
+    if (isPlaying && intradayQuotes.length > 0) {
+      id = setInterval(() => {
+        setPlaybackIndex(prev => {
+          if (prev >= intradayQuotes.length - 1) {
+            setIsPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, 500); // 500ms per minute tick
+    }
+    return () => clearInterval(id);
+  }, [isPlaying, intradayQuotes]);
 
   useEffect(() => {
     localStorage.setItem("pinnedSymbols", JSON.stringify(symbols));
@@ -124,6 +149,24 @@ export default function App() {
     }
   }, [symbols, symbolIdx, globalMode, simulationDate]);
 
+  useEffect(() => {
+    const fetchLiveIntraday = async (r: string, sym: string) => {
+      try {
+        const dRes = await fetch(`${import.meta.env.VITE_API_URL}/api/dashboard/${sym}/live-intraday?range=${r}`);
+        if (!dRes.ok) throw new Error("Live Intraday failed");
+        const data = await dRes.json();
+        setLiveIntraday(data.quotes || []);
+      } catch (e) {
+        console.error(e);
+        setLiveIntraday([]);
+      }
+    };
+
+    if (globalMode === 'live' && (range === '1D' || range === '1W') && symbols[symbolIdx]) {
+      fetchLiveIntraday(range, symbols[symbolIdx].sym);
+    }
+  }, [range, globalMode, symbolIdx, symbols]);
+
   const preset = symbols[symbolIdx];
   
   // If we are globally in simulation, the card mode is forced to simulation (hiding position features)
@@ -134,10 +177,51 @@ export default function App() {
     if (preset?.sym) localStorage.setItem(`notes:${preset.sym}`, val);
   };
 
-  const rangeDays: Record<string, number> = { '1M': 22, '3M': 65, '6M': 130, '1Y': 252, '3Y': 756, '5Y': 1260 };
-  const chartData = quotes.slice(-(rangeDays[range] ?? 252));
-  const latest = quotes[quotes.length - 1];
-  const prev = quotes[quotes.length - 2];
+  const loadIntraday = async () => {
+    if (!preset) return;
+    try {
+      const dRes = await fetch(`${import.meta.env.VITE_API_URL}/api/simulation/intraday/${preset.sym}?date=${simulationDate}`);
+      if (!dRes.ok) throw new Error("Intraday data failed");
+      const data = await dRes.json();
+      if (data.quotes.length > 0) {
+        setIntradayQuotes(data.quotes);
+        setPlaybackIndex(0);
+        setIsPlaying(true);
+      }
+    } catch(e) {
+      console.error(e);
+      alert("No intraday data found for this date. (Remember Yahoo only provides 7 days).");
+    }
+  };
+
+  const rangeDays: Record<string, number> = { '1D': 1, '1W': 5, '1M': 22, '3M': 65, '6M': 130, '1Y': 252, '3Y': 756, '5Y': 1260 };
+  
+  let activeQuotes = quotes;
+  let activeSignal = signal;
+  let isIntradayMode = false;
+
+  if (globalMode === 'simulation' && intradayQuotes.length > 0) {
+    isIntradayMode = true;
+    activeQuotes = intradayQuotes.slice(0, playbackIndex + 1);
+    const lastQ = activeQuotes[activeQuotes.length - 1];
+    if (lastQ && lastQ.signalData) {
+      activeSignal = lastQ.signalData;
+    }
+  } else if (globalMode === 'live' && (range === '1D' || range === '1W') && liveIntraday.length > 0) {
+    isIntradayMode = true;
+    activeQuotes = liveIntraday;
+    const lastQ = activeQuotes[activeQuotes.length - 1];
+    if (lastQ && lastQ.signalData) {
+      activeSignal = lastQ.signalData;
+    }
+  }
+
+  // Use activeQuotes instead of quotes for slicing chart data
+  // If we are playing back intraday data (which is strictly 1 day of minute data), show the full active portion.
+  // If it's live daily data, slice it according to the selected range (where 1D = 1 day, 1M = 22 days, etc).
+  const chartData = isIntradayMode ? activeQuotes : activeQuotes.slice(-(rangeDays[range] ?? 252));
+  const latest = activeQuotes[activeQuotes.length - 1];
+  const prev = activeQuotes[activeQuotes.length - 2];
 
   if (!preset) return <div className="p-8 font-mono text-ink-muted">Loading...</div>;
   const isStale = latest && latest._stale;
@@ -148,7 +232,7 @@ export default function App() {
     SELL: { color: T.sell, bg: '#C1543B22', Icon: TrendingDown,  label: 'SELL' },
     HOLD: { color: T.inkMuted, bg: '#8A93A622', Icon: Minus,     label: 'HOLD' },
   };
-  const sCfg = signal ? (signalCfg[signal.signal as keyof typeof signalCfg] ?? signalCfg.HOLD) : signalCfg.HOLD;
+  const sCfg = activeSignal ? (signalCfg[activeSignal.signal as keyof typeof signalCfg] ?? signalCfg.HOLD) : signalCfg.HOLD;
 
   return (
     <div className="bg-bg min-h-screen text-ink font-body" style={{ padding: '16px 20px' }}>
@@ -244,13 +328,25 @@ export default function App() {
           </button>
           
           {globalMode === 'simulation' && (
-            <input
-              type="date"
-              value={simulationDate}
-              max={new Date().toISOString().split('T')[0]}
-              onChange={(e) => setSimulationDate(e.target.value)}
-              className="bg-panel-raised border border-line/60 rounded outline-none text-ink text-[10px] font-mono px-1.5 py-0.5 ml-1"
-            />
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={simulationDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={(e) => {
+                  setSimulationDate(e.target.value);
+                  setIntradayQuotes([]);
+                  setIsPlaying(false);
+                }}
+                className="bg-panel-raised border border-line/60 rounded outline-none text-ink text-[10px] font-mono px-1.5 py-0.5 ml-1"
+              />
+              <button 
+                onClick={loadIntraday}
+                className="bg-brass/20 text-brass hover:bg-brass/30 transition-colors border border-brass/40 text-[10px] font-mono px-2 py-0.5 rounded ml-1 font-semibold"
+              >
+                ▶ Play Intraday
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -266,7 +362,7 @@ export default function App() {
       )}
 
       {/* ── MAIN GRID ──────────────────────────────────────────────────── */}
-      {!loading && latest && signal && (
+      {!loading && latest && activeSignal && (
         <>
           <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 268px' }}>
 
@@ -291,7 +387,7 @@ export default function App() {
               <div className="bg-panel border border-line rounded-xl p-4">
                 {/* Range selector */}
                 <div className="flex gap-1 mb-2">
-                  {(['1M','3M','6M','1Y','3Y','5Y'] as const).map(r => (
+                  {(['1D','1W','1M','3M','6M','1Y','3Y','5Y'] as const).map(r => (
                     <button key={r} onClick={() => setRange(r)}
                       className={`font-mono text-[10px] px-2 py-0.5 rounded transition-colors ${
                         range === r ? 'bg-brass text-bg font-semibold' : 'text-ink-muted hover:text-ink hover:bg-panel-raised'}`}>
@@ -424,34 +520,34 @@ export default function App() {
                   style={{ color: sCfg.color, background: sCfg.bg, border: `1px solid ${sCfg.color}44` }}
                 >
                   <sCfg.Icon size={18} strokeWidth={2.5} />
-                  <span className="font-display font-extrabold text-xl tracking-wide">{signal.signal}</span>
+                  <span className="font-display font-extrabold text-xl tracking-wide">{activeSignal.signal}</span>
                 </div>
 
                 {/* Rule Agreement & Win Rate */}
                 <div className="grid grid-cols-2 gap-4 mb-4 pb-4 border-b border-line border-dashed">
                   <div>
                     <div className="font-mono text-[9px] text-ink-muted mb-1">Rule Agreement</div>
-                    <div className="font-mono text-[11px] font-semibold">{Math.abs(signal.score)}/6 indicators ({signal.confidence}%)</div>
+                    <div className="font-mono text-[11px] font-semibold">{Math.abs(activeSignal.score)}/6 indicators ({activeSignal.confidence}%)</div>
                     <div className="h-1 bg-panel-raised rounded mt-1.5 overflow-hidden">
-                      <div className="h-full rounded transition-all" style={{ width: `${signal.confidence}%`, background: sCfg.color }} />
+                      <div className="h-full rounded transition-all" style={{ width: `${activeSignal.confidence}%`, background: sCfg.color }} />
                     </div>
                   </div>
-                  {signal.historicalWinRate != null && signal.historicalWinRate > 0 && (
+                  {activeSignal.historicalWinRate != null && activeSignal.historicalWinRate > 0 && (
                     <div>
                       <div className="font-mono text-[9px] text-ink-muted mb-1">Win Rate</div>
-                      <div className="font-mono text-[11px] font-semibold" style={{ color: signal.historicalWinRate >= 50 ? T.buy : T.sell }}>
-                        {signal.historicalWinRate.toFixed(1)}%
+                      <div className="font-mono text-[11px] font-semibold" style={{ color: activeSignal.historicalWinRate >= 50 ? T.buy : T.sell }}>
+                        {activeSignal.historicalWinRate.toFixed(1)}%
                       </div>
                     </div>
                   )}
                 </div>
 
                 {/* Reasoning Rules */}
-                {signal?.rules && (
+                {activeSignal?.rules && (
                   <div>
                     <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-2.5">Reasoning Ledger</div>
                     <div className="flex flex-col gap-0">
-                      {signal.rules.map((r: any, i: number) => (
+                      {activeSignal.rules.map((r: any, i: number) => (
                         <div key={i} className="flex justify-between items-start py-1.5">
                           <div className="font-body text-[11px] text-ink leading-tight">{r.label}</div>
                           <div className="font-mono text-[10px] font-medium ml-2 shrink-0"
@@ -462,7 +558,7 @@ export default function App() {
                       ))}
                       <div className="flex justify-between pt-2 mt-2 border-t border-line">
                         <span className="font-mono text-[9px] text-ink-muted uppercase">Net Score</span>
-                        <span className="font-mono font-bold text-[11px] text-brass">{signal.score > 0 ? "+" : ""}{signal.score} / 6</span>
+                        <span className="font-mono font-bold text-[11px] text-brass">{activeSignal.score > 0 ? "+" : ""}{activeSignal.score} / 6</span>
                       </div>
                     </div>
                   </div>

@@ -138,4 +138,65 @@ router.post('/position/:symbol', async (req, res) => {
   }
 });
 
+router.get('/simulation/intraday/:symbol', async (req, res) => {
+  try {
+    const symbol = (req.params.symbol as string).toUpperCase();
+    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
+    
+    const dateStr = req.query.date as string;
+    if (!dateStr) return res.status(400).json({ error: "Date parameter required" });
+
+    const quotes = await marketProvider.getIntradayQuotes(symbol, dateStr);
+    if (quotes.length < 2) return res.status(400).json({ error: "Not enough intraday data" });
+    
+    // We can compute indicators for intraday data, though standard params might be too slow.
+    // For now, we'll compute indicators normally to see the intraday signals.
+    const withIndicators = computeIndicators(quotes);
+    const { params, winRate } = getOptimalParams(symbol, quotes, dateStr);
+
+    // Compute signal for each point so frontend can play it back
+    const quotesWithSignals = withIndicators.map((q, i) => {
+        if (i === 0) return { ...q, signalData: scoreDay(q as any, q as any, params) };
+        const prev = withIndicators[i - 1];
+        const sig = scoreDay(q as any, prev as any, params);
+        return { ...q, signalData: { ...sig, historicalWinRate: winRate } };
+    });
+
+    res.json({
+      quotes: quotesWithSignals,
+      params
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+router.get('/dashboard/:symbol/live-intraday', async (req, res) => {
+  try {
+    const symbol = (req.params.symbol as string).toUpperCase();
+    if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
+    
+    const range = req.query.range as string; // '1D' or '1W'
+    const days = range === '1W' ? 6 : 1; // 6 to be safe for a full trading week
+    
+    const quotes = await marketProvider.getLiveIntradayQuotes(symbol, days);
+    if (quotes.length < 2) return res.json({ quotes: [] });
+    
+    const withIndicators = computeIndicators(quotes);
+    const { params, winRate } = getOptimalParams(symbol, quotes);
+
+    const quotesWithSignals = withIndicators.map((q, i) => {
+        if (i === 0) return { ...q, signalData: scoreDay(q as any, q as any, params) };
+        const prev = withIndicators[i - 1];
+        const sig = scoreDay(q as any, prev as any, params);
+        return { ...q, signalData: { ...sig, historicalWinRate: winRate } };
+    });
+
+    res.json({ quotes: quotesWithSignals });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

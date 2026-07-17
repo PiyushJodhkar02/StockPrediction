@@ -42,6 +42,8 @@ export function isValidOHLCVRow(symbol: string, row: any): boolean {
 export interface MarketDataProvider {
   getQuotes(symbol: string): Promise<any[]>;
   search(query: string): Promise<any[]>;
+  getIntradayQuotes(symbol: string, dateStr: string): Promise<any[]>;
+  getLiveIntradayQuotes(symbol: string, days: number): Promise<any[]>;
 }
 
 export class YahooFinanceProvider implements MarketDataProvider {
@@ -191,6 +193,80 @@ export class YahooFinanceProvider implements MarketDataProvider {
         }));
     } catch (e) {
       console.error("Yahoo Finance Search error:", e);
+      return [];
+    }
+  }
+
+  async getIntradayQuotes(symbol: string, dateStr: string): Promise<any[]> {
+    const isUSD = !symbol.endsWith('.BO') && !symbol.endsWith('.NS');
+    const fx = isUSD ? 83.5 : 1.0;
+    
+    console.log(`Fetching intraday data from Yahoo Finance for ${symbol} on ${dateStr}...`);
+    // Parse the date as UTC midnight to avoid local timezone shifts which may fetch previous day's data
+    const date1 = new Date(`${dateStr}T00:00:00Z`);
+    const date2 = new Date(`${dateStr}T00:00:00Z`);
+    date2.setUTCDate(date2.getUTCDate() + 1); // next day UTC midnight to cover the whole trading day
+
+    try {
+      const results = await yahooFinance.chart(symbol, {
+        period1: date1,
+        period2: date2,
+        interval: '1m'
+      });
+      
+      const quotes = results.quotes || [];
+      if (quotes.length === 0) {
+          throw new Error("No intraday time series data returned from Yahoo Finance");
+      }
+      
+      return quotes
+        .filter((row: any) => isValidOHLCVRow(symbol, row))
+        .map((row: any) => ({
+        date: row.date.toISOString(),
+        open: row.open * fx,
+        high: row.high * fx,
+        low: row.low * fx,
+        close: row.close * fx,
+        volume: Number(row.volume),
+      }));
+    } catch (e) {
+      console.error("Yahoo Finance Intraday API error:", e);
+      throw new Error(`Failed to fetch intraday data for ${symbol} on ${dateStr}`);
+    }
+  }
+
+  async getLiveIntradayQuotes(symbol: string, days: number): Promise<any[]> {
+    const isUSD = !symbol.endsWith('.BO') && !symbol.endsWith('.NS');
+    const fx = isUSD ? 83.5 : 1.0;
+    
+    const date2 = new Date();
+    const date1 = new Date();
+    date1.setDate(date1.getDate() - days);
+
+    try {
+      const results = await yahooFinance.chart(symbol, {
+        period1: date1,
+        period2: date2,
+        interval: '1m'
+      });
+      
+      const quotes = results.quotes || [];
+      if (quotes.length === 0) {
+          throw new Error("No live intraday data returned");
+      }
+      
+      return quotes
+        .filter((row: any) => isValidOHLCVRow(symbol, row))
+        .map((row: any) => ({
+        date: row.date.toISOString(),
+        open: row.open * fx,
+        high: row.high * fx,
+        low: row.low * fx,
+        close: row.close * fx,
+        volume: Number(row.volume),
+      }));
+    } catch (e) {
+      console.error("Yahoo Finance Live Intraday error:", e);
       return [];
     }
   }

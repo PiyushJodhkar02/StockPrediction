@@ -24,7 +24,15 @@ const T = {
 export default function ChartPanel({ data, levels }: ChartPanelProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
+  const candlestickSeriesRef = useRef<any>(null);
+  const sma20SeriesRef = useRef<any>(null);
+  const sma50SeriesRef = useRef<any>(null);
+  const supportLineRef = useRef<any>(null);
+  const resistanceLineRef = useRef<any>(null);
+  const trailingStopLineRef = useRef<any>(null);
+  const lastStartRef = useRef<number | null>(null);
 
+  // 1. Initialize Chart Once
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
@@ -53,7 +61,7 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
     });
     chartRef.current = chart;
 
-    const candlestickSeries = chart.addSeries(CandlestickSeries, {
+    candlestickSeriesRef.current = chart.addSeries(CandlestickSeries, {
       upColor: T.buy,
       downColor: T.sell,
       borderVisible: false,
@@ -61,77 +69,18 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       wickDownColor: T.sell,
     });
 
-    const sma20Series = chart.addSeries(LineSeries, {
+    sma20SeriesRef.current = chart.addSeries(LineSeries, {
       color: T.brass,
       lineWidth: 2,
       crosshairMarkerVisible: false,
     });
 
-    const sma50Series = chart.addSeries(LineSeries, {
+    sma50SeriesRef.current = chart.addSeries(LineSeries, {
       color: "#6C7A93",
       lineWidth: 2,
       lineStyle: 2,
       crosshairMarkerVisible: false,
     });
-
-    // Map data
-    const candles: CandlestickData[] = [];
-    const sma20: LineData[] = [];
-    const sma50: LineData[] = [];
-    const markers: SeriesMarker<any>[] = [];
-
-    data.forEach(d => {
-      const time = d.date;
-      candles.push({ time, open: d.open, high: d.high, low: d.low, close: d.close });
-      
-      if (d.sma20 != null) sma20.push({ time, value: d.sma20 });
-      if (d.sma50 != null) sma50.push({ time, value: d.sma50 });
-
-      if (d.signal === "BUY") {
-        markers.push({ time, position: 'belowBar', color: T.buy, shape: 'arrowUp', text: 'BUY' });
-      } else if (d.signal === "SELL") {
-        markers.push({ time, position: 'aboveBar', color: T.sell, shape: 'arrowDown', text: 'SELL' });
-      }
-    });
-
-    candlestickSeries.setData(candles);
-    sma20Series.setData(sma20);
-    sma50Series.setData(sma50);
-    createSeriesMarkers(candlestickSeries, markers);
-
-    // ── Price level reference lines ──
-    if (levels?.support) {
-      candlestickSeries.createPriceLine({
-        price: levels.support,
-        color: T.buy,
-        lineWidth: 1,
-        lineStyle: 2, // dashed
-        axisLabelVisible: true,
-        title: 'Support',
-      });
-    }
-    if (levels?.resistance) {
-      candlestickSeries.createPriceLine({
-        price: levels.resistance,
-        color: T.sell,
-        lineWidth: 1,
-        lineStyle: 2,
-        axisLabelVisible: true,
-        title: 'Resistance',
-      });
-    }
-    if (levels?.trailingStop) {
-      candlestickSeries.createPriceLine({
-        price: levels.trailingStop,
-        color: T.brass,
-        lineWidth: 1,
-        lineStyle: 3, // sparse dotted
-        axisLabelVisible: true,
-        title: 'Trail Stop',
-      });
-    }
-
-    chart.timeScale().fitContent();
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -145,6 +94,101 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
+  }, []);
+
+  // 2. Update Data when it changes
+  useEffect(() => {
+    if (!chartRef.current || !candlestickSeriesRef.current) return;
+
+    const candles: CandlestickData[] = [];
+    const sma20: LineData[] = [];
+    const sma50: LineData[] = [];
+    const markers: SeriesMarker<any>[] = [];
+
+    let prevSig = "HOLD";
+    data.forEach(d => {
+      let time = d.date;
+      // Convert full ISO strings to UNIX timestamp in seconds for intraday
+      if (typeof time === 'string' && time.includes('T')) {
+        time = Math.floor(new Date(time).getTime() / 1000) as any;
+      }
+      
+      candles.push({ time, open: d.open, high: d.high, low: d.low, close: d.close });
+      
+      if (d.sma20 != null) sma20.push({ time, value: d.sma20 });
+      if (d.sma50 != null) sma50.push({ time, value: d.sma50 });
+
+      // Support activeSignal in markers
+      const sig = d.signalData ? d.signalData.signal : d.signal;
+      if (sig !== "HOLD" && sig !== prevSig) {
+        if (sig === "BUY") {
+          markers.push({ time, position: 'belowBar', color: T.buy, shape: 'arrowUp' });
+        } else if (sig === "SELL") {
+          markers.push({ time, position: 'aboveBar', color: T.sell, shape: 'arrowDown' });
+        }
+      }
+      if (sig && sig !== "HOLD") {
+          prevSig = sig;
+      } else if (sig === "HOLD") {
+          prevSig = "HOLD"; // reset
+      }
+    });
+
+    candlestickSeriesRef.current.setData(candles);
+    sma20SeriesRef.current.setData(sma20);
+    sma50SeriesRef.current.setData(sma50);
+    createSeriesMarkers(candlestickSeriesRef.current, markers);
+
+    if (supportLineRef.current) {
+      candlestickSeriesRef.current.removePriceLine(supportLineRef.current);
+      supportLineRef.current = null;
+    }
+    if (levels?.support) {
+      supportLineRef.current = candlestickSeriesRef.current.createPriceLine({
+        price: levels.support,
+        color: T.buy,
+        lineWidth: 1,
+        lineStyle: 2, // dashed
+        axisLabelVisible: true,
+        title: 'Support',
+      });
+    }
+
+    if (resistanceLineRef.current) {
+      candlestickSeriesRef.current.removePriceLine(resistanceLineRef.current);
+      resistanceLineRef.current = null;
+    }
+    if (levels?.resistance) {
+      resistanceLineRef.current = candlestickSeriesRef.current.createPriceLine({
+        price: levels.resistance,
+        color: T.sell,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: 'Resistance',
+      });
+    }
+
+    if (trailingStopLineRef.current) {
+      candlestickSeriesRef.current.removePriceLine(trailingStopLineRef.current);
+      trailingStopLineRef.current = null;
+    }
+    if (levels?.trailingStop) {
+      trailingStopLineRef.current = candlestickSeriesRef.current.createPriceLine({
+        price: levels.trailingStop,
+        color: T.brass,
+        lineWidth: 1,
+        lineStyle: 3, // sparse dotted
+        axisLabelVisible: true,
+        title: 'Trail Stop',
+      });
+    }
+
+    const startTime = candles.length > 0 ? candles[0].time : null;
+    if (startTime !== lastStartRef.current) {
+      chartRef.current.timeScale().fitContent();
+      lastStartRef.current = startTime as number;
+    }
   }, [data, levels]);
 
   return (
