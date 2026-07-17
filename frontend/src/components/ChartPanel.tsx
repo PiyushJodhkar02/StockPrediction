@@ -48,7 +48,7 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       },
       timeScale: {
         borderColor: T.line,
-        timeVisible: false,
+        timeVisible: true,
       },
       rightPriceScale: {
         borderColor: T.line,
