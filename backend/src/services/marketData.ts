@@ -239,15 +239,15 @@ export class YahooFinanceProvider implements MarketDataProvider {
     const isUSD = !symbol.endsWith('.BO') && !symbol.endsWith('.NS');
     const fx = isUSD ? 83.5 : 1.0;
     
-    const date2 = new Date();
-    const date1 = new Date();
-    date1.setDate(date1.getDate() - days);
-
     try {
+      const intervalStr = days === 1 ? '1m' : '5m';
+      const period1 = new Date();
+      // For 1D, fetch last 2 days to be safe (if market just opened), for 1W fetch last 7 days
+      period1.setDate(period1.getDate() - (days === 1 ? 2 : 7));
+
       const results = await yahooFinance.chart(symbol, {
-        period1: date1,
-        period2: date2,
-        interval: '1m'
+        period1,
+        interval: intervalStr as any
       });
       
       const quotes = results.quotes || [];

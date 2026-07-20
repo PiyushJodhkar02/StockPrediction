@@ -99,25 +99,51 @@ router.post('/analysis/:symbol', analysisLimiter, async (req, res) => {
     const symbol = (req.params.symbol as string).toUpperCase();
     if (!isValidSymbol(symbol)) return res.status(400).json({ error: "Invalid symbol format" });
 
+    // Support simulation date passed either as query param or in request body
+    const simulationDate = (req.query.date as string) || (req.body?.date as string) || undefined;
+    const intradayQuote = req.body?.intradayQuote;
+
     let quotes = await marketProvider.getQuotes(symbol);
-    quotes = filterQuotesByDate(quotes, req.query.date as string);
+    quotes = filterQuotesByDate(quotes, simulationDate);
     if (quotes.length < 2) return res.status(400).json({ error: "Not enough data" });
     
     const withIndicators = computeIndicators(quotes);
     if (withIndicators.length < 2) return res.status(400).json({ error: "Not enough data" });
-    const { params } = getOptimalParams(symbol, quotes, req.query.date as string);
-    const latest = withIndicators[withIndicators.length - 1] as any;
-    const prev = withIndicators[withIndicators.length - 2] as any;
-    const signal = scoreDay(latest, prev, params);
+    const { params, winRate } = getOptimalParams(symbol, quotes, simulationDate);
     
+    // If intradayQuote is provided (e.g. simulation playback minute), use it as the 'latest' point.
+    // Otherwise fallback to the daily latest close.
+    const latest = intradayQuote ? intradayQuote : (withIndicators[withIndicators.length - 1] as any);
+    const prev = withIndicators[withIndicators.length - 2] as any;
+    
+    // If intradayQuote already has signalData from frontend, use it. Otherwise score it.
+    const signal = intradayQuote?.signalData ? intradayQuote.signalData : scoreDay(latest, prev, params);
+    const signalWithWinRate = { ...signal, historicalWinRate: winRate };
+    
+    // Enrich signal with concrete indicator values for better AI analysis
+    const enrichedSignal = {
+      ...signalWithWinRate,
+      indicators: {
+        rsi: latest.rsi != null ? +latest.rsi.toFixed(2) : null,
+        macdLine: latest.macdLine != null ? +latest.macdLine.toFixed(4) : null,
+        macdSignal: latest.macdSignal != null ? +latest.macdSignal.toFixed(4) : null,
+        macdHist: latest.macdHist != null ? +latest.macdHist.toFixed(4) : null,
+        sma20: latest.sma20 != null ? +latest.sma20.toFixed(2) : null,
+        sma50: latest.sma50 != null ? +latest.sma50.toFixed(2) : null,
+        priceVsSma20: latest.sma20 ? ((latest.close - latest.sma20) / latest.sma20 * 100).toFixed(2) + '%' : null,
+        priceVsSma50: latest.sma50 ? ((latest.close - latest.sma50) / latest.sma50 * 100).toFixed(2) + '%' : null,
+      }
+    };
+
     const recentPrices = withIndicators.slice(-5).map(q => q.close);
     
-    const analysis = await generateAnalysis(symbol, latest.close, signal, recentPrices);
+    const analysis = await generateAnalysis(symbol, latest.close, enrichedSignal, recentPrices, simulationDate);
     res.json(analysis);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 router.post('/position/:symbol', async (req, res) => {
   try {
@@ -181,9 +207,11 @@ router.get('/dashboard/:symbol/live-intraday', async (req, res) => {
     const days = range === '1W' ? 6 : 1; // 6 to be safe for a full trading week
     
     const quotes = await marketProvider.getLiveIntradayQuotes(symbol, days);
-    if (quotes.length < 2) return res.json({ quotes: [] });
+    console.log(`live-intraday fetched ${quotes.length} quotes for ${symbol}`);
+    if (quotes.length < 2) return res.json({ quotes: [], debug_length: quotes.length, debug_days: days, debug_range: range });
     
     const withIndicators = computeIndicators(quotes);
+    console.log(`live-intraday indicators computed: ${withIndicators.length} quotes`);
     const { params, winRate } = getOptimalParams(symbol, quotes);
 
     const quotesWithSignals = withIndicators.map((q, i) => {

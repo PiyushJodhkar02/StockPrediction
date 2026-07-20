@@ -14,3 +14,5 @@ app.use('/api', apiRoutes);
 app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
 });
+
+
