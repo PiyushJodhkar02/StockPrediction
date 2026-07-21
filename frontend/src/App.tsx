@@ -51,7 +51,7 @@ export default function App() {
   const [analystNoteTrigger, setAnalystNoteTrigger] = useState(0);
 
   // CALL state: set once when simulation starts (or from live levels)
-  const [callState, setCallState] = useState<{ entry: number|null; target: number|null; stopLoss: number|null; stopLossStatus: 'active'|'hit'|null } | null>(null);
+  const [callState, setCallState] = useState<{ status?: string; entry: number|null; target: number|null; stopLoss: number|null; stopLossStatus?: 'active'|'hit'|null } | null>(null);
   
   // Simulation Mode states
   const [globalMode, setGlobalMode] = useState<'live'|'simulation'>('live');
