@@ -40,6 +40,7 @@ export default function ChartPanel({ data, levels, tradeLines }: ChartPanelProps
   const areaSeriesRef = useRef<any>(null);
   const sma20SeriesRef = useRef<any>(null);
   const sma50SeriesRef = useRef<any>(null);
+  const markersPluginRef = useRef<any>(null);
 
   // Support / resistance level lines
   const supportLineRef = useRef<any>(null);
@@ -202,7 +203,12 @@ export default function ChartPanel({ data, levels, tradeLines }: ChartPanelProps
     areaSeriesRef.current.setData([]);
     sma20SeriesRef.current.setData(sma20);
     sma50SeriesRef.current.setData(sma50);
-    createSeriesMarkers(candlestickSeriesRef.current, markers);
+
+    if (!markersPluginRef.current) {
+      markersPluginRef.current = createSeriesMarkers(candlestickSeriesRef.current, markers);
+    } else {
+      markersPluginRef.current.setMarkers(markers);
+    }
 
     // Support line
     if (supportLineRef.current) {
