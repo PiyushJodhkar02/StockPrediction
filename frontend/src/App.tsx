@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Radio, CircleDot, Search, X, NotebookPen, TrendingUp, TrendingDown, Minus, Pencil, RotateCcw } from "lucide-react";
+import { Radio, CircleDot, Search, X, NotebookPen, TrendingUp, TrendingDown, Minus, Zap } from "lucide-react";
 import ChartPanel from "./components/ChartPanel";
 import AnalystNote from "./components/AnalystNote";
 import PriceLevelCard from "./components/PriceLevelCard";
@@ -50,17 +50,8 @@ export default function App() {
   const [bottomTab, setBottomTab] = useState<'analyst'|'levels'|'backtest'>('analyst');
   const [analystNoteTrigger, setAnalystNoteTrigger] = useState(0);
 
-  // Per-symbol manual overrides for entry / target / stop-loss
-  const [customEntry, setCustomEntry] = useState<string>('');
-  const [customTarget, setCustomTarget] = useState<string>('');
-  const [customStop, setCustomStop] = useState<string>('');
-  // Editing state for the inline fields
-  const [editingEntry, setEditingEntry] = useState(false);
-  const [editingTarget, setEditingTarget] = useState(false);
-  const [editingStop, setEditingStop] = useState(false);
-  const [entryDraft, setEntryDraft] = useState('');
-  const [targetDraft, setTargetDraft] = useState('');
-  const [stopDraft, setStopDraft] = useState('');
+  // CALL state: set once when simulation starts (or from live levels)
+  const [callState, setCallState] = useState<{ entry: number|null; target: number|null; stopLoss: number|null; stopLossStatus: 'active'|'hit'|null } | null>(null);
   
   // Simulation Mode states
   const [globalMode, setGlobalMode] = useState<'live'|'simulation'>('live');
@@ -100,20 +91,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [isPlaying, intradayQuotes]);
 
-  // Throttle Analyst Note in simulation to avoid hitting API rate limits:
-  // Trigger every 15 simulated minutes OR whenever the trade signal changes.
-  const currentIntradaySignal = intradayQuotes[playbackIndex]?.signalData?.signal;
-  const prevSignal = useRef(currentIntradaySignal);
-
-  useEffect(() => {
-    if (globalMode === 'simulation' && isPlaying) {
-      if (playbackIndex % 15 === 0 || currentIntradaySignal !== prevSignal.current) {
-        setAnalystNoteTrigger(Date.now());
-      }
-      prevSignal.current = currentIntradaySignal;
-    }
-  }, [playbackIndex, globalMode, isPlaying, currentIntradaySignal]);
-
+  // Live mode: refresh analyst note once every 60s (unchanged)
   useEffect(() => {
     if (globalMode === 'simulation') return;
     const id = setInterval(() => setAnalystNoteTrigger(Date.now()), 60000);
@@ -172,13 +150,7 @@ export default function App() {
       const sym = symbols[symbolIdx].sym;
       loadData(sym, false, globalMode, simulationDate);
       setNotes(localStorage.getItem(`notes:${sym}`) ?? '');
-      // Load per-symbol overrides
-      setCustomEntry(localStorage.getItem(`customEntry:${sym}`) ?? '');
-      setCustomTarget(localStorage.getItem(`customTarget:${sym}`) ?? '');
-      setCustomStop(localStorage.getItem(`customStop:${sym}`) ?? '');
-      setEditingEntry(false);
-      setEditingTarget(false);
-      setEditingStop(false);
+      setCallState(null); // reset CALL when switching symbol/mode
       
       if (globalMode === 'live') {
         const id = setInterval(() => loadData(sym, true, 'live'), 15000);
@@ -186,6 +158,38 @@ export default function App() {
       }
     }
   }, [symbols, symbolIdx, globalMode, simulationDate]);
+
+  // Track the active signal during simulation so we can fetch a new AI prediction when it changes
+  const prevSignalRef = useRef<string | null>(null);
+  
+  // We need to derive activeSignal early here so the hook can use it.
+  const currentActiveSignal = (() => {
+    if (globalMode === 'simulation' && intradayQuotes.length > 0) {
+      const q = intradayQuotes.slice(0, playbackIndex + 1);
+      return q[q.length - 1]?.signalData?.signal ?? null;
+    } else if (globalMode === 'live' && liveIntraday.length > 0) {
+      return liveIntraday[liveIntraday.length - 1]?.signalData?.signal ?? null;
+    }
+    return signal?.signal ?? null;
+  })();
+
+  useEffect(() => {
+    if (currentActiveSignal) {
+      // If signal changed during active playback/live, request a new prediction
+      if (prevSignalRef.current !== null && prevSignalRef.current !== currentActiveSignal) {
+        setCallState({
+          status: 'loading',
+          entry: levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null,
+          target: levels?.target1 ?? null,
+          stopLoss: levels?.stopLoss ?? null,
+          stopLossStatus: levels?.stopLossStatus ?? null
+        });
+        setAnalystNoteTrigger(Date.now());
+      }
+      prevSignalRef.current = currentActiveSignal;
+    }
+  }, [currentActiveSignal, levels]);
+
 
   useEffect(() => {
     const fetchLiveIntraday = async (r: string, sym: string) => {
@@ -215,34 +219,14 @@ export default function App() {
     if (preset?.sym) localStorage.setItem(`notes:${preset.sym}`, val);
   };
 
-  const commitEntry = (draft: string) => {
-    const val = draft.trim();
-    setCustomEntry(val);
-    if (preset?.sym) {
-      if (val) localStorage.setItem(`customEntry:${preset.sym}`, val);
-      else localStorage.removeItem(`customEntry:${preset.sym}`);
-    }
-    setEditingEntry(false);
-  };
-
-  const commitTarget = (draft: string) => {
-    const val = draft.trim();
-    setCustomTarget(val);
-    if (preset?.sym) {
-      if (val) localStorage.setItem(`customTarget:${preset.sym}`, val);
-      else localStorage.removeItem(`customTarget:${preset.sym}`);
-    }
-    setEditingTarget(false);
-  };
-
-  const commitStop = (draft: string) => {
-    const val = draft.trim();
-    setCustomStop(val);
-    if (preset?.sym) {
-      if (val) localStorage.setItem(`customStop:${preset.sym}`, val);
-      else localStorage.removeItem(`customStop:${preset.sym}`);
-    }
-    setEditingStop(false);
+  const handleAnalysisLoaded = (data: any) => {
+    setCallState(prev => ({
+      ...prev,
+      status: 'ready',
+      entry: data.entry ?? prev?.entry ?? null,
+      target: data.target ?? prev?.target ?? null,
+      stopLoss: data.stopLoss ?? prev?.stopLoss ?? null,
+    }));
   };
 
   const loadIntraday = async () => {
@@ -255,6 +239,16 @@ export default function App() {
         setIntradayQuotes(data.quotes);
         setPlaybackIndex(0);
         setIsPlaying(true);
+        // Fire CALL once: set status to loading so we wait for LLM but show engine baseline immediately
+        setCallState({
+          status: 'loading',
+          entry: levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null,
+          target: levels?.target1 ?? null,
+          stopLoss: levels?.stopLoss ?? null,
+          stopLossStatus: levels?.stopLossStatus ?? null,
+        });
+        // Trigger analyst note exactly once for this CALL
+        setAnalystNoteTrigger(Date.now());
       }
     } catch(e) {
       console.error(e);
@@ -496,11 +490,10 @@ export default function App() {
                   data={chartData}
                   levels={levels ? { support: levels.support, resistance: levels.resistance } : undefined}
                   tradeLines={levels && activeSignal ? {
-                    entry: levels.buyAbove ?? levels.entryZone?.upper ?? null,
-                    // Use custom overrides when set, otherwise fall back to engine
-                    stopLoss: customStop ? parseFloat(customStop) : (levels.stopLoss ?? null),
-                    target1: customTarget ? parseFloat(customTarget) : (levels.target1 ?? null),
-                    target2: customTarget ? null : (levels.target2 ?? null), // hide T2 line if user set a custom single target
+                    entry: callState?.entry ?? levels.buyAbove ?? levels.entryZone?.upper ?? null,
+                    stopLoss: callState?.stopLoss ?? levels.stopLoss ?? null,
+                    target1: callState?.target ?? levels.target1 ?? null,
+                    target2: callState ? null : (levels.target2 ?? null),
                     signal: activeSignal.signal,
                   } : null}
                 />
@@ -609,263 +602,138 @@ export default function App() {
                   </div>
                 )}
               </div>
-                {bottomTab === 'analyst' && (
-                  <AnalystNote
-                    symbol={preset.sym}
-                    mode={globalMode}
-                    simulationDate={globalMode === 'simulation' ? simulationDate : undefined}
-                    simulationTime={globalMode === 'simulation' ? latest?.date : undefined}
-                    triggerFetch={analystNoteTrigger}
-                    intradayQuote={latest}
-                  />
-                )}
+              <div className={bottomTab === 'analyst' ? 'block' : 'hidden'}>
+                <AnalystNote
+                  symbol={preset.sym}
+                  mode={globalMode}
+                  simulationDate={globalMode === 'simulation' ? simulationDate : undefined}
+                  simulationTime={globalMode === 'simulation' ? latest?.date : undefined}
+                  triggerFetch={analystNoteTrigger}
+                  intradayQuote={latest}
+                  onAnalysisLoaded={handleAnalysisLoaded}
+                />
               </div>
+            </div>
 
-            {/* RIGHT SIDEBAR: Trade Card, Personal Notes, Disclaimer */}
+            {/* RIGHT SIDEBAR: CALL Card, Personal Notes, Disclaimer */}
             <div className="lg:col-span-1 flex flex-col gap-3 min-w-0">
-            {/* 1. Signal & Reasoning Card */}
+            {/* 1. CALL Card */}
             <div className="bg-panel border border-line rounded-xl overflow-hidden flex flex-col">
-              <div className="w-full p-4 flex justify-between items-center bg-panel">
-                <div className="font-display font-bold text-sm tracking-wide text-brass">TRADE CARD / SIGNAL</div>
+              <div className="w-full px-4 py-3 flex justify-between items-center bg-panel border-b border-line">
+                <div className="flex items-center gap-2">
+                  <Zap size={13} className="text-brass" />
+                  <div className="font-display font-bold text-sm tracking-wide text-brass">CALL</div>
+                </div>
+                {/* Signal badge inline in header */}
+                <div
+                  className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold px-2.5 py-1 rounded-full"
+                  style={{ color: sCfg.color, background: sCfg.bg, border: `1px solid ${sCfg.color}44` }}
+                >
+                  <sCfg.Icon size={11} strokeWidth={2.5} />
+                  {sCfg.label}
+                </div>
               </div>
-              
-              <div className="p-4 border-t border-line bg-bg/30">
-                <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-3">Current Signal</div>
 
-                {/* ── Target / Entry / Profit / Stop-Loss Grid (all editable) ── */}
-                {levels && (() => {
-                  const engineEntry  = levels.buyAbove ?? levels.entryZone?.upper ?? null;
-                  const engineTarget = levels.target1 ?? null;
-                  const engineStop   = levels.stopLoss ?? null;
-                  // Custom overrides win; fall back to engine values
-                  const effectiveEntry  = customEntry  ? parseFloat(customEntry)  : engineEntry;
-                  const effectiveTarget = customTarget ? parseFloat(customTarget) : engineTarget;
-                  const effectiveStop   = customStop   ? parseFloat(customStop)   : engineStop;
+              <div className="p-4 bg-bg/30">
+
+                {/* ── CALL Grid: Entry (left, full height) | Target (top-right) | Stop Loss (bottom-right) ── */}
+                {(() => {
+                  // In simulation: use frozen callState; in live: use current levels
+                  const effectiveEntry  = callState?.entry  ?? levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null;
+                  const effectiveTarget = callState?.target ?? levels?.target1 ?? null;
+                  const effectiveStop   = callState?.stopLoss ?? levels?.stopLoss ?? null;
+                  const effectiveSlStatus = callState?.stopLossStatus ?? levels?.stopLossStatus ?? null;
 
                   const fmtINR = (n: number) =>
                     `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-                  // Inline editable field — reused for entry, target, stop
-                  const EditableField = ({
-                    value, draft, setDraft, isEditing, setEditing, onCommit, onReset,
-                    hasCustom, engineVal, label, color, size = 'md', placeholder
-                  }: {
-                    value: number | null; draft: string; setDraft: (v:string)=>void;
-                    isEditing: boolean; setEditing: (v:boolean)=>void;
-                    onCommit: (d:string)=>void; onReset: ()=>void;
-                    hasCustom: boolean; engineVal: number | null;
-                    label: string; color: string; size?: 'sm'|'md';
-                    placeholder?: string;
-                  }) => (
-                    <div className={`flex flex-col items-center justify-center w-full relative group/${label}`}>
-                      <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-0.5 flex items-center gap-1">
-                        {label}
-                        {hasCustom && <span className="text-brass text-[8px] border border-brass/40 rounded px-0.5">custom</span>}
-                      </div>
-                      {isEditing ? (
-                        <div className="flex flex-col items-center gap-0.5 w-full">
-                          <input
-                            autoFocus
-                            type="number" step="0.01"
-                            value={draft}
-                            onChange={e => setDraft(e.target.value)}
-                            onKeyDown={e => { if (e.key==='Enter') onCommit(draft); if (e.key==='Escape') setEditing(false); }}
-                            onBlur={() => onCommit(draft)}
-                            className="w-full bg-bg border rounded px-1.5 py-0.5 font-mono text-[11px] text-ink outline-none text-center"
-                            style={{ borderColor: color }}
-                            placeholder={placeholder ?? (engineVal ? engineVal.toFixed(2) : 'Price…')}
-                          />
-                          <div className="font-mono text-[7px] text-ink-muted">Enter · Esc</div>
-                        </div>
-                      ) : (
-                        <>
-                          <button
-                            className={`font-mono font-bold flex items-center gap-0.5 hover:opacity-80 transition-opacity ${size==='md' ? 'text-[14px]' : 'text-[11px]'}`}
-                            style={{ color }}
-                            title={`Click to set custom ${label.toLowerCase()}`}
-                            onClick={() => { setDraft(hasCustom ? String(value?.toFixed(2)||'') : (engineVal ? engineVal.toFixed(2) : '')); setEditing(true); }}
-                          >
-                            {value != null ? fmtINR(value) : <span className="text-ink-muted text-[10px]">Set {label} →</span>}
-                            {value != null && <Pencil size={8} className={`opacity-0 group-hover/${label}:opacity-50 transition-opacity shrink-0`} />}
-                          </button>
-                          {hasCustom && (
-                            <button
-                              className="flex items-center gap-0.5 font-mono text-[7px] text-ink-muted hover:text-sell mt-0.5 transition-colors"
-                              onClick={onReset}
-                            >
-                              <RotateCcw size={7} /> reset
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
+                  const pctChange = (from: number | null, to: number | null) => {
+                    if (from == null || to == null) return null;
+                    return ((to - from) / from * 100).toFixed(2);
+                  };
 
                   return (
                     <div
-                      className="grid mb-4 rounded-lg overflow-hidden border border-line"
-                      style={{ gridTemplateColumns: '1fr 1fr', gridTemplateRows: 'auto auto auto' }}
+                      className="rounded-lg overflow-hidden border border-line mb-4"
+                      style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' }}
                     >
-                      {/* ── TARGET — left column, spans all 3 rows ─────────── */}
+                      {/* ── ENTRY — left column, spans both rows ── */}
                       <div
-                        className="flex flex-col items-center justify-center px-3 py-4 border-r border-line"
-                        style={{ gridRow: '1 / 4' }}
+                        className="flex flex-col items-center justify-center px-3 py-5 border-r border-line"
+                        style={{ gridRow: '1 / 3' }}
                       >
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-2">Target</div>
-                        {editingTarget ? (
-                          <div className="flex flex-col items-center gap-0.5 w-full">
-                            <input
-                              autoFocus type="number" step="0.01"
-                              value={targetDraft}
-                              onChange={e => setTargetDraft(e.target.value)}
-                              onKeyDown={e => { if (e.key==='Enter') commitTarget(targetDraft); if (e.key==='Escape') setEditingTarget(false); }}
-                              onBlur={() => commitTarget(targetDraft)}
-                              className="w-full bg-bg border border-brass rounded px-2 py-1 font-mono text-[11px] text-ink outline-none text-center"
-                              placeholder={engineTarget ? engineTarget.toFixed(2) : 'Price…'}
-                            />
-                            <div className="font-mono text-[7px] text-ink-muted">Enter · Esc</div>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center relative group/target">
-                            <button
-                              className="font-mono text-[15px] font-bold flex items-center gap-1 hover:opacity-80 transition-opacity"
-                              style={{ color: T.buy }}
-                              title="Click to set custom target"
-                              onClick={() => { setTargetDraft(customTarget || (engineTarget ? engineTarget.toFixed(2) : '')); setEditingTarget(true); }}
-                            >
-                              {effectiveTarget != null ? fmtINR(effectiveTarget) : <span className="text-ink-muted text-[11px]">Set target →</span>}
-                              {effectiveTarget != null && <Pencil size={10} className="opacity-0 group-hover/target:opacity-60 transition-opacity shrink-0" />}
-                            </button>
-                            {customTarget && (
-                              <>
-                                <span className="text-brass text-[8px] border border-brass/40 rounded px-0.5 mb-0.5">custom</span>
-                                <button
-                                  className="flex items-center gap-0.5 font-mono text-[8px] text-ink-muted hover:text-sell transition-colors"
-                                  onClick={() => { setCustomTarget(''); if (preset?.sym) localStorage.removeItem(`customTarget:${preset.sym}`); }}
-                                >
-                                  <RotateCcw size={8} /> reset
-                                </button>
-                              </>
-                            )}
-                            {!customTarget && levels.target2 != null && (
-                              <div className="font-mono text-[10px] mt-1" style={{ color: T.buy + 'bb' }}>
-                                T2 {fmtINR(levels.target2)}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* ── ENTRY (top-right, editable) ───────────────────── */}
-                      <div className="flex flex-col items-center justify-center px-2 py-2 border-b border-line">
-                        <EditableField
-                          label="Entry" value={effectiveEntry} draft={entryDraft} setDraft={setEntryDraft}
-                          isEditing={editingEntry} setEditing={setEditingEntry}
-                          onCommit={commitEntry}
-                          onReset={() => { setCustomEntry(''); if (preset?.sym) localStorage.removeItem(`customEntry:${preset.sym}`); }}
-                          hasCustom={!!customEntry} engineVal={engineEntry}
-                          color={T.buy} size="sm"
-                          placeholder={latest?.close ? latest.close.toFixed(2) : 'Your buy price…'}
-                        />
-                      </div>
-
-                      {/* ── PROFIT (middle-right, live P&L) ─────────────── */}
-                      <div className="flex flex-col items-center justify-center px-2 py-2 border-b border-line bg-panel-raised/40">
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-0.5">Profit</div>
-                        {effectiveEntry != null && latest?.close != null ? (() => {
+                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-2">Entry</div>
+                        <div className="font-mono font-bold text-[17px]" style={{ color: T.buy }}>
+                          {effectiveEntry != null ? fmtINR(effectiveEntry) : <span className="text-ink-muted text-[11px]">—</span>}
+                        </div>
+                        {effectiveEntry != null && latest?.close != null && (() => {
                           const cp = latest.close;
                           const pnl = cp - effectiveEntry;
-                          const pct = (pnl / effectiveEntry) * 100;
-                          const hit = effectiveTarget != null && cp >= effectiveTarget;
+                          const pct = (pnl / effectiveEntry * 100);
                           const col = pnl >= 0 ? T.buy : T.sell;
                           return (
-                            <>
-                              {hit && (
-                                <div className="font-mono text-[8px] font-bold text-buy bg-buy/10 border border-buy/30 rounded px-1 py-0.5 mb-0.5">
-                                  🎯 Hit!
-                                </div>
-                              )}
-                              <div className="font-mono text-[13px] font-bold" style={{ color: col }}>
-                                {pnl>=0?'+':''}{pct.toFixed(2)}%
+                            <div className="mt-1.5 text-center">
+                              <div className="font-mono text-[11px] font-semibold" style={{ color: col }}>
+                                {pnl >= 0 ? '+' : ''}{pct.toFixed(2)}%
                               </div>
-                              <div className="font-mono text-[8px] mt-0.5" style={{ color: col }}>
-                                {pnl>=0?'+':''}₹{Math.abs(pnl).toFixed(2)}/share
+                              <div className="font-mono text-[8px] mt-0.5" style={{ color: col + 'bb' }}>
+                                {pnl >= 0 ? '+' : ''}₹{Math.abs(pnl).toFixed(2)}/share
                               </div>
-                              {effectiveTarget != null && (
-                                <div className="font-mono text-[7px] text-ink-muted mt-0.5">
-                                  {cp >= effectiveTarget
-                                    ? `+₹${(cp-effectiveTarget).toFixed(2)} past tgt`
-                                    : `₹${(effectiveTarget-cp).toFixed(2)} to tgt`}
-                                </div>
-                              )}
-                            </>
+                            </div>
                           );
-                        })() : (
-                          <button
-                            className="font-mono text-[9px] text-brass hover:text-buy transition-colors"
-                            onClick={() => { setEntryDraft(latest?.close ? latest.close.toFixed(2) : ''); setEditingEntry(true); }}
-                          >
-                            Set entry ↑
-                          </button>
+                        })()}
+                        {callState?.status === 'ready' && (
+                          <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5">
+                            AI Predicted
+                          </div>
+                        )}
+                        {callState?.status === 'loading' && (
+                          <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5 flex items-center gap-1.5">
+                            <div className="w-2 h-2 border border-brass border-t-transparent rounded-full animate-spin" />
+                            AI Predicting...
+                          </div>
+                        )}
+                        {globalMode === 'simulation' && callState == null && (
+                          <div className="mt-2 font-mono text-[8px] text-ink-muted border border-line/60 rounded px-1.5 py-0.5">
+                            Engine Baseline
+                          </div>
                         )}
                       </div>
 
-                      {/* ── STOP LOSS (bottom-right, editable) ─────────── */}
-                      <div className="flex flex-col items-center justify-center px-3 py-3 relative group/stop">
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-0.5 flex items-center gap-1">
-                          Stop Loss
-                          {customStop && (
-                            <span className="text-brass text-[8px] border border-brass/40 rounded px-0.5">custom</span>
-                          )}
+                      {/* ── TARGET — top-right ── */}
+                      <div className="flex flex-col items-center justify-center px-3 py-3 border-b border-line">
+                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Target</div>
+                        <div className="font-mono font-bold text-[13px]" style={{ color: T.buy }}>
+                          {effectiveTarget != null ? fmtINR(effectiveTarget) : '—'}
                         </div>
-
-                        {editingStop ? (
-                          <div className="flex flex-col items-center gap-1 w-full">
-                            <input
-                              autoFocus
-                              type="number"
-                              step="0.01"
-                              value={stopDraft}
-                              onChange={e => setStopDraft(e.target.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') commitStop(stopDraft);
-                                if (e.key === 'Escape') setEditingStop(false);
-                              }}
-                              onBlur={() => commitStop(stopDraft)}
-                              className="w-full bg-bg border border-sell/60 rounded px-2 py-1 font-mono text-[12px] text-ink outline-none text-center"
-                              placeholder={engineStop ? engineStop.toFixed(2) : 'Price…'}
-                            />
-                            <div className="font-mono text-[8px] text-ink-muted">Enter · Esc</div>
+                        {effectiveTarget != null && effectiveEntry != null && (
+                          <div className="font-mono text-[9px] mt-0.5" style={{ color: T.buy + 'aa' }}>
+                            +{pctChange(effectiveEntry, effectiveTarget)}%
                           </div>
-                        ) : (
-                          <>
-                            <button
-                              className="font-mono text-[13px] font-bold flex items-center gap-1 hover:opacity-80 transition-opacity"
-                              style={{ color: levels.stopLossStatus === 'hit' ? T.sell : T.brass }}
-                              title="Click to set custom stop loss"
-                              onClick={() => { setStopDraft(customStop || (engineStop ? engineStop.toFixed(2) : '')); setEditingStop(true); }}
-                            >
-                              {effectiveStop != null ? fmtINR(effectiveStop) : '—'}
-                              <Pencil size={9} className="opacity-0 group-hover/stop:opacity-60 transition-opacity shrink-0" />
-                            </button>
-                            {customStop && (
-                              <button
-                                className="flex items-center gap-0.5 font-mono text-[8px] text-ink-muted hover:text-sell mt-0.5 transition-colors"
-                                title="Reset to engine value"
-                                onClick={() => { setCustomStop(''); if (preset?.sym) localStorage.removeItem(`customStop:${preset.sym}`); }}
-                              >
-                                <RotateCcw size={8} /> reset
-                              </button>
-                            )}
-                            {levels.stopLossStatus != null && (
-                              <div
-                                className="font-mono text-[9px] mt-0.5 font-semibold"
-                                style={{ color: levels.stopLossStatus === 'hit' ? T.sell : T.brass }}
-                              >
-                                {levels.stopLossStatus === 'hit' ? '● Hit' : '● Active'}
-                              </div>
-                            )}
-                          </>
+                        )}
+                      </div>
+
+                      {/* ── STOP LOSS — bottom-right ── */}
+                      <div className="flex flex-col items-center justify-center px-3 py-3">
+                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Stop Loss</div>
+                        <div
+                          className="font-mono font-bold text-[13px]"
+                          style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
+                        >
+                          {effectiveStop != null ? fmtINR(effectiveStop) : '—'}
+                        </div>
+                        {effectiveStop != null && effectiveEntry != null && (
+                          <div className="font-mono text-[9px] mt-0.5" style={{ color: T.sell + 'aa' }}>
+                            {pctChange(effectiveEntry, effectiveStop)}%
+                          </div>
+                        )}
+                        {effectiveSlStatus != null && (
+                          <div
+                            className="font-mono text-[8px] font-semibold mt-1"
+                            style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
+                          >
+                            {effectiveSlStatus === 'hit' ? '● Hit' : '● Active'}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -921,7 +789,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                </div>
+              </div>
             </div>
 
 

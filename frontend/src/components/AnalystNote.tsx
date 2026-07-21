@@ -8,6 +8,7 @@ interface AnalystNoteProps {
   triggerFetch?: number;
   simulationTime?: string;
   intradayQuote?: any;
+  onAnalysisLoaded?: (data: any) => void;
 }
 
 interface NoteData {
@@ -18,7 +19,7 @@ interface NoteData {
   simDate?: string;
 }
 
-export default function AnalystNote({ symbol, mode = 'live', simulationDate, triggerFetch = 0, simulationTime, intradayQuote }: AnalystNoteProps) {
+export default function AnalystNote({ symbol, mode = 'live', simulationDate, triggerFetch = 0, simulationTime, intradayQuote, onAnalysisLoaded }: AnalystNoteProps) {
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState<NoteData[]>([]);
   const hasInitiallyFetched = useRef(false);
@@ -58,6 +59,11 @@ export default function AnalystNote({ symbol, mode = 'live', simulationDate, tri
       });
       if (!res.ok) throw new Error("Failed to fetch analysis");
       const data = await res.json();
+      
+      // Pass data up to App.tsx so it can display the LLM's predicted entry/target/SL
+      if (onAnalysisLoaded) {
+        onAnalysisLoaded(data);
+      }
       
       setNotes(prev => {
         // Don't add a new card if the narrative hasn't changed

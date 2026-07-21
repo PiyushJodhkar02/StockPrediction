@@ -120,9 +120,18 @@ router.post('/analysis/:symbol', analysisLimiter, async (req, res) => {
     const signal = intradayQuote?.signalData ? intradayQuote.signalData : scoreDay(latest, prev, params);
     const signalWithWinRate = { ...signal, historicalWinRate: winRate };
     
-    // Enrich signal with concrete indicator values for better AI analysis
+    // Compute price levels so we can include the CALL's entry/target/SL in the note
+    const priceLevels = computePriceLevels(quotes as any, signal.signal);
+
+    // Enrich signal with concrete indicator values + CALL levels for better AI analysis
     const enrichedSignal = {
       ...signalWithWinRate,
+      callLevels: {
+        entry:    priceLevels.buyAbove ?? priceLevels.entryZone?.upper ?? latest.close ?? null,
+        target:   priceLevels.target1 ?? null,
+        stopLoss: priceLevels.stopLoss ?? null,
+        atr:      priceLevels.atrValue ?? null,
+      },
       indicators: {
         rsi: latest.rsi != null ? +latest.rsi.toFixed(2) : null,
         macdLine: latest.macdLine != null ? +latest.macdLine.toFixed(4) : null,
