@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Play, Pause, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 
 interface AnalystNoteProps {
   symbol: string;

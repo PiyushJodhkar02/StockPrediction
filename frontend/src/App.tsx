@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { Radio, CircleDot, Search, X, NotebookPen, TrendingUp, TrendingDown, Minus, Pencil, RotateCcw, Check } from "lucide-react";
+import { Radio, CircleDot, Search, X, NotebookPen, TrendingUp, TrendingDown, Minus, Pencil, RotateCcw } from "lucide-react";
 import ChartPanel from "./components/ChartPanel";
 import AnalystNote from "./components/AnalystNote";
 import PriceLevelCard from "./components/PriceLevelCard";
-import TradeCard from "./components/TradeCard";
+
 
 import {
   ComposedChart, Line, Bar, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell
@@ -48,7 +48,6 @@ export default function App() {
   const [range, setRange] = useState<'1D'|'1W'|'1M'|'3M'|'6M'|'1Y'|'3Y'|'5Y'>('1Y');
   const [notes, setNotes] = useState<string>('');
   const [bottomTab, setBottomTab] = useState<'analyst'|'levels'|'backtest'>('analyst');
-  const [showTradeCard, setShowTradeCard] = useState(false);
   const [analystNoteTrigger, setAnalystNoteTrigger] = useState(0);
 
   // Per-symbol manual overrides for entry / target / stop-loss

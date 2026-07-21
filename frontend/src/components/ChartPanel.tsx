@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries, createSeriesMarkers, LineStyle } from 'lightweight-charts';
-import type { CandlestickData, LineData, SeriesMarker, Time } from 'lightweight-charts';
+import type { CandlestickData, LineData, SeriesMarker } from 'lightweight-charts';
 
 interface TradeLines {
   /** Entry / buy-above price */
@@ -172,16 +172,12 @@ export default function ChartPanel({ data, levels, tradeLines }: ChartPanelProps
 
     // Determine overall direction for the day/week to color the intraday line (if we ever use it)
     const isIntraday = data.some(d => typeof d.date === 'string' && d.date.includes('T'));
-    const firstClose = candles[0]?.close ?? 0;
-    const lastClose = candles[candles.length - 1]?.close ?? 0;
-    const color = lastClose >= firstClose ? T.buy : T.sell;
-
     // Always show time now that it displays correct market close time for daily data
     chartRef.current.applyOptions({
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        tickMarkFormatter: (time: number | string, tickMarkType: any, locale: string) => {
+        tickMarkFormatter: (time: number | string) => {
           if (typeof time === 'number') {
             const date = new Date(time * 1000);
             return isIntraday ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString();
@@ -367,7 +363,6 @@ export default function ChartPanel({ data, levels, tradeLines }: ChartPanelProps
     }
   }, [tradeLines, data]);
 
-  const showTradeLegend = tradeLines?.signal === 'BUY';
 
   return (
     <div style={{ height: 280, marginTop: 12 }}>
