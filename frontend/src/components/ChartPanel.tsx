@@ -1,6 +1,16 @@
 import { useEffect, useRef } from 'react';
-import { createChart, ColorType, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts';
-import type { CandlestickData, LineData, SeriesMarker } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries, createSeriesMarkers, LineStyle } from 'lightweight-charts';
+import type { CandlestickData, LineData, SeriesMarker, Time } from 'lightweight-charts';
+
+interface TradeLines {
+  /** Entry / buy-above price */
+  entry: number | null;
+  stopLoss: number | null;
+  target1: number | null;
+  target2: number | null;
+  /** Only render lines when signal is BUY — keeps chart clean on HOLD/SELL */
+  signal: string;
+}
 
 interface ChartPanelProps {
   data: any[];
@@ -9,6 +19,8 @@ interface ChartPanelProps {
     resistance: number | null;
     trailingStop?: number | null;
   };
+  /** Trade execution lines — entry, stop-loss, targets */
+  tradeLines?: TradeLines | null;
 }
 
 const T = {
@@ -21,18 +33,28 @@ const T = {
   sell: "#C1543B",
 };
 
-export default function ChartPanel({ data, levels }: ChartPanelProps) {
+export default function ChartPanel({ data, levels, tradeLines }: ChartPanelProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const candlestickSeriesRef = useRef<any>(null);
+  const areaSeriesRef = useRef<any>(null);
   const sma20SeriesRef = useRef<any>(null);
   const sma50SeriesRef = useRef<any>(null);
+
+  // Support / resistance level lines
   const supportLineRef = useRef<any>(null);
   const resistanceLineRef = useRef<any>(null);
   const trailingStopLineRef = useRef<any>(null);
+
+  // Trade execution lines (entry / stop-loss / targets)
+  const entryLineRef = useRef<any>(null);
+  const stopLossLineRef = useRef<any>(null);
+  const target1LineRef = useRef<any>(null);
+  const target2LineRef = useRef<any>(null);
+
   const lastStartRef = useRef<number | null>(null);
 
-  // 1. Initialize Chart Once
+  // ── 1. Initialize Chart Once ────────────────────────────────────────
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
@@ -48,7 +70,7 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       },
       timeScale: {
         borderColor: T.line,
-        timeVisible: true,
+        timeVisible: false, // will be dynamically updated
       },
       rightPriceScale: {
         borderColor: T.line,
@@ -69,6 +91,13 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       wickDownColor: T.sell,
     });
 
+    areaSeriesRef.current = chart.addSeries(AreaSeries, {
+      lineColor: T.buy,
+      topColor: `${T.buy}80`,
+      bottomColor: `${T.buy}00`,
+      lineWidth: 2,
+    });
+
     sma20SeriesRef.current = chart.addSeries(LineSeries, {
       color: T.brass,
       lineWidth: 2,
@@ -82,21 +111,23 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       crosshairMarkerVisible: false,
     });
 
-    const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+    const resizeObserver = new ResizeObserver(entries => {
+      if (entries.length === 0 || entries[0].target !== chartContainerRef.current) {
+        return;
       }
-    };
-    
-    window.addEventListener('resize', handleResize);
+      const newRect = entries[0].contentRect;
+      chart.applyOptions({ width: newRect.width });
+    });
+
+    resizeObserver.observe(chartContainerRef.current);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       chart.remove();
     };
   }, []);
 
-  // 2. Update Data when it changes
+  // ── 2. Update Data & Level Lines When data/levels change ────────────
   useEffect(() => {
     if (!chartRef.current || !candlestickSeriesRef.current) return;
 
@@ -108,17 +139,22 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
     let prevSig = "HOLD";
     data.forEach(d => {
       let time = d.date;
-      // Convert full ISO strings to UNIX timestamp in seconds for intraday
-      if (typeof time === 'string' && time.includes('T')) {
-        time = Math.floor(new Date(time).getTime() / 1000) as any;
+      if (typeof time === 'string') {
+        if (time.includes('T')) {
+          // Intraday data: just convert to unix epoch
+          time = Math.floor(new Date(time).getTime() / 1000);
+        } else {
+          // Daily data: set to 15:30 local time
+          const [year, month, day] = time.split('-').map(Number);
+          time = Math.floor(new Date(year, month - 1, day, 15, 30, 0).getTime() / 1000);
+        }
       }
-      
+
       candles.push({ time, open: d.open, high: d.high, low: d.low, close: d.close });
-      
+
       if (d.sma20 != null) sma20.push({ time, value: d.sma20 });
       if (d.sma50 != null) sma50.push({ time, value: d.sma50 });
 
-      // Support activeSignal in markers
       const sig = d.signalData ? d.signalData.signal : d.signal;
       if (sig !== "HOLD" && sig !== prevSig) {
         if (sig === "BUY") {
@@ -128,38 +164,75 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
         }
       }
       if (sig && sig !== "HOLD") {
-          prevSig = sig;
+        prevSig = sig;
       } else if (sig === "HOLD") {
-          prevSig = "HOLD"; // reset
+        prevSig = "HOLD";
       }
     });
 
+    // Determine overall direction for the day/week to color the intraday line (if we ever use it)
+    const isIntraday = data.some(d => typeof d.date === 'string' && d.date.includes('T'));
+    const firstClose = candles[0]?.close ?? 0;
+    const lastClose = candles[candles.length - 1]?.close ?? 0;
+    const color = lastClose >= firstClose ? T.buy : T.sell;
+
+    // Always show time now that it displays correct market close time for daily data
+    chartRef.current.applyOptions({
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        tickMarkFormatter: (time: number | string, tickMarkType: any, locale: string) => {
+          if (typeof time === 'number') {
+            const date = new Date(time * 1000);
+            return isIntraday ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString();
+          }
+          return time;
+        }
+      },
+      localization: {
+        timeFormatter: (time: number) => {
+          if (typeof time === 'number') {
+            const date = new Date(time * 1000);
+            return isIntraday ? `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : date.toLocaleDateString();
+          }
+          return time;
+        }
+      }
+    });
+
+    // Always show candlestick, hide area chart
+    const activeMainSeries = candlestickSeriesRef.current;
     candlestickSeriesRef.current.setData(candles);
+    areaSeriesRef.current.setData([]);
     sma20SeriesRef.current.setData(sma20);
     sma50SeriesRef.current.setData(sma50);
     createSeriesMarkers(candlestickSeriesRef.current, markers);
 
+    // Support line
     if (supportLineRef.current) {
       candlestickSeriesRef.current.removePriceLine(supportLineRef.current);
+      areaSeriesRef.current.removePriceLine(supportLineRef.current);
       supportLineRef.current = null;
     }
     if (levels?.support) {
-      supportLineRef.current = candlestickSeriesRef.current.createPriceLine({
+      supportLineRef.current = activeMainSeries.createPriceLine({
         price: levels.support,
         color: T.buy,
         lineWidth: 1,
-        lineStyle: 2, // dashed
+        lineStyle: 2,
         axisLabelVisible: true,
         title: 'Support',
       });
     }
 
+    // Resistance line
     if (resistanceLineRef.current) {
       candlestickSeriesRef.current.removePriceLine(resistanceLineRef.current);
+      areaSeriesRef.current.removePriceLine(resistanceLineRef.current);
       resistanceLineRef.current = null;
     }
     if (levels?.resistance) {
-      resistanceLineRef.current = candlestickSeriesRef.current.createPriceLine({
+      resistanceLineRef.current = activeMainSeries.createPriceLine({
         price: levels.resistance,
         color: T.sell,
         lineWidth: 1,
@@ -169,16 +242,18 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
       });
     }
 
+    // Trailing stop line
     if (trailingStopLineRef.current) {
       candlestickSeriesRef.current.removePriceLine(trailingStopLineRef.current);
+      areaSeriesRef.current.removePriceLine(trailingStopLineRef.current);
       trailingStopLineRef.current = null;
     }
     if (levels?.trailingStop) {
-      trailingStopLineRef.current = candlestickSeriesRef.current.createPriceLine({
+      trailingStopLineRef.current = activeMainSeries.createPriceLine({
         price: levels.trailingStop,
         color: T.brass,
         lineWidth: 1,
-        lineStyle: 3, // sparse dotted
+        lineStyle: 3,
         axisLabelVisible: true,
         title: 'Trail Stop',
       });
@@ -191,17 +266,114 @@ export default function ChartPanel({ data, levels }: ChartPanelProps) {
     }
   }, [data, levels]);
 
+  // ── 3. Trade Execution Lines (Entry / Stop-Loss / Targets) ──────────
+  // Runs independently from the data effect so live-refresh can call
+  // applyOptions on existing lines instead of recreating them, avoiding
+  // flicker on the 15-second auto-refresh cycle.
+  useEffect(() => {
+    if (!candlestickSeriesRef.current || !areaSeriesRef.current) return;
+
+    const isIntraday = data.some(d => typeof d.date === 'string' && d.date.includes('T'));
+    const activeMainSeries = isIntraday ? areaSeriesRef.current : candlestickSeriesRef.current;
+
+    const showLines = tradeLines?.signal === 'BUY';
+
+    // ── Entry line ──────────────────────────────────────────────────
+    if (!showLines || tradeLines?.entry == null) {
+      if (entryLineRef.current) {
+        candlestickSeriesRef.current.removePriceLine(entryLineRef.current);
+        areaSeriesRef.current.removePriceLine(entryLineRef.current);
+        entryLineRef.current = null;
+      }
+    } else {
+      if (entryLineRef.current) {
+        entryLineRef.current.applyOptions({ price: tradeLines.entry });
+      } else {
+        entryLineRef.current = activeMainSeries.createPriceLine({
+          price: tradeLines.entry,
+          color: T.buy,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: 'Entry',
+        });
+      }
+    }
+
+    // ── Stop-loss line ──────────────────────────────────────────────
+    if (!showLines || tradeLines?.stopLoss == null) {
+      if (stopLossLineRef.current) {
+        candlestickSeriesRef.current.removePriceLine(stopLossLineRef.current);
+        areaSeriesRef.current.removePriceLine(stopLossLineRef.current);
+        stopLossLineRef.current = null;
+      }
+    } else {
+      if (stopLossLineRef.current) {
+        stopLossLineRef.current.applyOptions({ price: tradeLines.stopLoss });
+      } else {
+        stopLossLineRef.current = activeMainSeries.createPriceLine({
+          price: tradeLines.stopLoss,
+          color: T.sell,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: 'Stop Loss',
+        });
+      }
+    }
+
+    // ── Target 1 line ───────────────────────────────────────────────
+    if (!showLines || tradeLines?.target1 == null) {
+      if (target1LineRef.current) {
+        candlestickSeriesRef.current.removePriceLine(target1LineRef.current);
+        areaSeriesRef.current.removePriceLine(target1LineRef.current);
+        target1LineRef.current = null;
+      }
+    } else {
+      if (target1LineRef.current) {
+        target1LineRef.current.applyOptions({ price: tradeLines.target1 });
+      } else {
+        target1LineRef.current = activeMainSeries.createPriceLine({
+          price: tradeLines.target1,
+          color: T.brass,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'Target 1',
+        });
+      }
+    }
+
+    // ── Target 2 line ───────────────────────────────────────────────
+    if (!showLines || tradeLines?.target2 == null) {
+      if (target2LineRef.current) {
+        candlestickSeriesRef.current.removePriceLine(target2LineRef.current);
+        areaSeriesRef.current.removePriceLine(target2LineRef.current);
+        target2LineRef.current = null;
+      }
+    } else {
+      if (target2LineRef.current) {
+        target2LineRef.current.applyOptions({ price: tradeLines.target2 });
+      } else {
+        target2LineRef.current = activeMainSeries.createPriceLine({
+          price: tradeLines.target2,
+          color: T.brass,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'Target 2',
+        });
+      }
+    }
+  }, [tradeLines, data]);
+
+  const showTradeLegend = tradeLines?.signal === 'BUY';
+
   return (
     <div style={{ height: 280, marginTop: 12 }}>
       <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
-      <div className="flex gap-4 mt-2 font-mono text-[10px] text-ink-muted flex-wrap">
-        <span><span className="text-brass">&#9679;</span> SMA 20</span>
-        <span><span style={{ color: "#6C7A93" }}>&#9679;</span> SMA 50</span>
-        <span><span className="text-buy">&#9679;</span> Buy signal</span>
-        <span><span className="text-sell">&#9679;</span> Sell signal</span>
-        <span><span className="text-buy" style={{ opacity: 0.6 }}>─ ─</span> Support</span>
-        <span><span className="text-sell" style={{ opacity: 0.6 }}>─ ─</span> Resistance</span>
-      </div>
+
+
     </div>
   );
 }
