@@ -50,8 +50,8 @@ export default function App() {
   const [bottomTab, setBottomTab] = useState<'analyst'|'levels'|'backtest'>('analyst');
   const [analystNoteTrigger, setAnalystNoteTrigger] = useState(0);
 
-  // CALL state: set once when simulation starts (or from live levels)
-  const [callState, setCallState] = useState<{ status?: string; entry: number|null; target: number|null; stopLoss: number|null; stopLossStatus?: 'active'|'hit'|null } | null>(null);
+  // CALL stack: fresh calls on top, older ones below
+  const [callStack, setCallStack] = useState<{ status?: string; entry: number|null; target: number|null; stopLoss: number|null; stopLossStatus?: 'active'|'hit'|null; signal?: string; timestamp?: number }[]>([]);
   
   // Simulation Mode states
   const [globalMode, setGlobalMode] = useState<'live'|'simulation'>('live');
@@ -71,6 +71,7 @@ export default function App() {
   const [intradayQuotes, setIntradayQuotes] = useState<any[]>([]);
   const [playbackIndex, setPlaybackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(500);
   
   // Live Intraday state
   const [liveIntraday, setLiveIntraday] = useState<any[]>([]);
@@ -86,10 +87,10 @@ export default function App() {
           }
           return prev + 1;
         });
-      }, 500); // 500ms per minute tick
+      }, playbackSpeed);
     }
     return () => clearInterval(id);
-  }, [isPlaying, intradayQuotes]);
+  }, [isPlaying, intradayQuotes, playbackSpeed]);
 
   // Live mode: refresh analyst note once every 60s (unchanged)
   useEffect(() => {
@@ -150,7 +151,7 @@ export default function App() {
       const sym = symbols[symbolIdx].sym;
       loadData(sym, false, globalMode, simulationDate);
       setNotes(localStorage.getItem(`notes:${sym}`) ?? '');
-      setCallState(null); // reset CALL when switching symbol/mode
+      setCallStack([]); // reset CALL when switching symbol/mode
       
       if (globalMode === 'live') {
         const id = setInterval(() => loadData(sym, true, 'live'), 15000);
@@ -177,13 +178,15 @@ export default function App() {
     if (currentActiveSignal) {
       // If signal changed during active playback/live, request a new prediction
       if (prevSignalRef.current !== null && prevSignalRef.current !== currentActiveSignal) {
-        setCallState({
+        setCallStack(prev => [{
           status: 'loading',
           entry: levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null,
           target: levels?.target1 ?? null,
           stopLoss: levels?.stopLoss ?? null,
-          stopLossStatus: levels?.stopLossStatus ?? null
-        });
+          stopLossStatus: levels?.stopLossStatus ?? null,
+          signal: currentActiveSignal,
+          timestamp: Date.now()
+        }, ...prev]);
         setAnalystNoteTrigger(Date.now());
       }
       prevSignalRef.current = currentActiveSignal;
@@ -220,13 +223,18 @@ export default function App() {
   };
 
   const handleAnalysisLoaded = (data: any) => {
-    setCallState(prev => ({
-      ...prev,
-      status: 'ready',
-      entry: data.entry ?? prev?.entry ?? null,
-      target: data.target ?? prev?.target ?? null,
-      stopLoss: data.stopLoss ?? prev?.stopLoss ?? null,
-    }));
+    setCallStack(prev => {
+      if (prev.length === 0) return prev;
+      const newStack = [...prev];
+      newStack[0] = {
+        ...newStack[0],
+        status: 'ready',
+        entry: data.entry ?? newStack[0].entry ?? null,
+        target: data.target ?? newStack[0].target ?? null,
+        stopLoss: data.stopLoss ?? newStack[0].stopLoss ?? null,
+      };
+      return newStack;
+    });
   };
 
   const loadIntraday = async () => {
@@ -240,13 +248,15 @@ export default function App() {
         setPlaybackIndex(0);
         setIsPlaying(true);
         // Fire CALL once: set status to loading so we wait for LLM but show engine baseline immediately
-        setCallState({
+        setCallStack([{
           status: 'loading',
           entry: levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null,
           target: levels?.target1 ?? null,
           stopLoss: levels?.stopLoss ?? null,
           stopLossStatus: levels?.stopLossStatus ?? null,
-        });
+          signal: signal?.signal ?? 'HOLD',
+          timestamp: Date.now()
+        }]);
         // Trigger analyst note exactly once for this CALL
         setAnalystNoteTrigger(Date.now());
       }
@@ -424,6 +434,18 @@ export default function App() {
                   >
                     ↺
                   </button>
+                  {/* Speed control */}
+                  <select
+                    value={playbackSpeed}
+                    onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+                    title="Playback speed"
+                    className="bg-panel-raised text-ink-muted hover:text-ink transition-colors border border-line text-[10px] font-mono px-1 py-0.5 rounded outline-none cursor-pointer"
+                  >
+                    <option value={1000}>1x</option>
+                    <option value={500}>2x</option>
+                    <option value={200}>5x</option>
+                    <option value={50}>20x</option>
+                  </select>
                 </div>
               ) : (
                 <button
@@ -490,10 +512,10 @@ export default function App() {
                   data={chartData}
                   levels={levels ? { support: levels.support, resistance: levels.resistance } : undefined}
                   tradeLines={levels && activeSignal ? {
-                    entry: callState?.entry ?? levels.buyAbove ?? levels.entryZone?.upper ?? null,
-                    stopLoss: callState?.stopLoss ?? levels.stopLoss ?? null,
-                    target1: callState?.target ?? levels.target1 ?? null,
-                    target2: callState ? null : (levels.target2 ?? null),
+                    entry: callStack[0]?.entry ?? levels.buyAbove ?? levels.entryZone?.upper ?? null,
+                    stopLoss: callStack[0]?.stopLoss ?? levels.stopLoss ?? null,
+                    target1: callStack[0]?.target ?? levels.target1 ?? null,
+                    target2: callStack.length > 0 ? null : (levels.target2 ?? null),
                     signal: activeSignal.signal,
                   } : null}
                 />
@@ -636,13 +658,16 @@ export default function App() {
 
               <div className="p-4 bg-bg/30">
 
-                {/* ── CALL Grid: Entry (left, full height) | Target (top-right) | Stop Loss (bottom-right) ── */}
+                {/* ── CALL Stack ── */}
                 {(() => {
-                  // In simulation: use frozen callState; in live: use current levels
-                  const effectiveEntry  = callState?.entry  ?? levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null;
-                  const effectiveTarget = callState?.target ?? levels?.target1 ?? null;
-                  const effectiveStop   = callState?.stopLoss ?? levels?.stopLoss ?? null;
-                  const effectiveSlStatus = callState?.stopLossStatus ?? levels?.stopLossStatus ?? null;
+                  const stackToRender = callStack.length > 0 ? callStack : [{
+                    entry: levels?.buyAbove ?? levels?.entryZone?.upper ?? latest?.close ?? null,
+                    target: levels?.target1 ?? null,
+                    stopLoss: levels?.stopLoss ?? null,
+                    stopLossStatus: levels?.stopLossStatus ?? null,
+                    status: null,
+                    signal: activeSignal?.signal ?? 'HOLD',
+                  }];
 
                   const fmtINR = (n: number) =>
                     `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -653,89 +678,109 @@ export default function App() {
                   };
 
                   return (
-                    <div
-                      className="rounded-lg overflow-hidden border border-line mb-4"
-                      style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' }}
-                    >
-                      {/* ── ENTRY — left column, spans both rows ── */}
-                      <div
-                        className="flex flex-col items-center justify-center px-3 py-5 border-r border-line"
-                        style={{ gridRow: '1 / 3' }}
-                      >
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-2">Entry</div>
-                        <div className="font-mono font-bold text-[17px]" style={{ color: T.buy }}>
-                          {effectiveEntry != null ? fmtINR(effectiveEntry) : <span className="text-ink-muted text-[11px]">—</span>}
-                        </div>
-                        {effectiveEntry != null && latest?.close != null && (() => {
-                          const cp = latest.close;
-                          const pnl = cp - effectiveEntry;
-                          const pct = (pnl / effectiveEntry * 100);
-                          const col = pnl >= 0 ? T.buy : T.sell;
-                          return (
-                            <div className="mt-1.5 text-center">
-                              <div className="font-mono text-[11px] font-semibold" style={{ color: col }}>
-                                {pnl >= 0 ? '+' : ''}{pct.toFixed(2)}%
-                              </div>
-                              <div className="font-mono text-[8px] mt-0.5" style={{ color: col + 'bb' }}>
-                                {pnl >= 0 ? '+' : ''}₹{Math.abs(pnl).toFixed(2)}/share
-                              </div>
-                            </div>
-                          );
-                        })()}
-                        {callState?.status === 'ready' && (
-                          <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5">
-                            AI Predicted
-                          </div>
-                        )}
-                        {callState?.status === 'loading' && (
-                          <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5 flex items-center gap-1.5">
-                            <div className="w-2 h-2 border border-brass border-t-transparent rounded-full animate-spin" />
-                            AI Predicting...
-                          </div>
-                        )}
-                        {globalMode === 'simulation' && callState == null && (
-                          <div className="mt-2 font-mono text-[8px] text-ink-muted border border-line/60 rounded px-1.5 py-0.5">
-                            Engine Baseline
-                          </div>
-                        )}
-                      </div>
+                    <div className="flex flex-col gap-3 mb-4 max-h-[420px] overflow-y-auto pr-1">
+                      {stackToRender.map((call, idx) => {
+                        const isLatest = idx === 0;
+                        const effectiveEntry = call.entry;
+                        const effectiveTarget = call.target;
+                        const effectiveStop = call.stopLoss;
+                        const effectiveSlStatus = call.stopLossStatus;
 
-                      {/* ── TARGET — top-right ── */}
-                      <div className="flex flex-col items-center justify-center px-3 py-3 border-b border-line">
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Target</div>
-                        <div className="font-mono font-bold text-[13px]" style={{ color: T.buy }}>
-                          {effectiveTarget != null ? fmtINR(effectiveTarget) : '—'}
-                        </div>
-                        {effectiveTarget != null && effectiveEntry != null && (
-                          <div className="font-mono text-[9px] mt-0.5" style={{ color: T.buy + 'aa' }}>
-                            +{pctChange(effectiveEntry, effectiveTarget)}%
-                          </div>
-                        )}
-                      </div>
-
-                      {/* ── STOP LOSS — bottom-right ── */}
-                      <div className="flex flex-col items-center justify-center px-3 py-3">
-                        <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Stop Loss</div>
-                        <div
-                          className="font-mono font-bold text-[13px]"
-                          style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
-                        >
-                          {effectiveStop != null ? fmtINR(effectiveStop) : '—'}
-                        </div>
-                        {effectiveStop != null && effectiveEntry != null && (
-                          <div className="font-mono text-[9px] mt-0.5" style={{ color: T.sell + 'aa' }}>
-                            {pctChange(effectiveEntry, effectiveStop)}%
-                          </div>
-                        )}
-                        {effectiveSlStatus != null && (
+                        return (
                           <div
-                            className="font-mono text-[8px] font-semibold mt-1"
-                            style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
+                            key={idx}
+                            className={`rounded-lg overflow-hidden border shrink-0 ${isLatest ? 'border-line' : 'border-line/40 opacity-70'} relative`}
+                            style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' }}
                           >
-                            {effectiveSlStatus === 'hit' ? '● Hit' : '● Active'}
+                            {/* ── ENTRY — left column ── */}
+                            <div
+                              className={`flex flex-col items-center justify-center px-3 py-5 border-r ${isLatest ? 'border-line' : 'border-line/40'}`}
+                              style={{ gridRow: '1 / 3' }}
+                            >
+                              <div className="flex items-center gap-2 mb-2">
+                                {call.signal && (
+                                  <span className={`font-display text-[9px] font-bold px-1.5 py-0.5 rounded ${call.signal === 'BUY' ? 'bg-buy/20 text-buy' : call.signal === 'SELL' ? 'bg-sell/20 text-sell' : 'bg-ink-muted/20 text-ink-muted'}`}>
+                                    {call.signal}
+                                  </span>
+                                )}
+                                <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest">Entry</div>
+                              </div>
+                              <div className="font-mono font-bold text-[17px]" style={{ color: T.buy }}>
+                                {effectiveEntry != null ? fmtINR(effectiveEntry) : <span className="text-ink-muted text-[11px]">—</span>}
+                              </div>
+                              {isLatest && effectiveEntry != null && latest?.close != null && (() => {
+                                const cp = latest.close;
+                                const pnl = cp - effectiveEntry;
+                                const pct = (pnl / effectiveEntry * 100);
+                                const col = pnl >= 0 ? T.buy : T.sell;
+                                return (
+                                  <div className="mt-1.5 text-center">
+                                    <div className="font-mono text-[11px] font-semibold" style={{ color: col }}>
+                                      {pnl >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                                    </div>
+                                    <div className="font-mono text-[8px] mt-0.5" style={{ color: col + 'bb' }}>
+                                      {pnl >= 0 ? '+' : ''}₹{Math.abs(pnl).toFixed(2)}/share
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                              {call.status === 'ready' && (
+                                <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5">
+                                  AI Predicted
+                                </div>
+                              )}
+                              {call.status === 'loading' && isLatest && (
+                                <div className="mt-2 font-mono text-[8px] text-brass border border-brass/30 bg-brass/10 rounded px-1.5 py-0.5 flex items-center gap-1.5">
+                                  <div className="w-2 h-2 border border-brass border-t-transparent rounded-full animate-spin" />
+                                  AI Predicting...
+                                </div>
+                              )}
+                              {globalMode === 'simulation' && stackToRender === callStack && (!call.status || (call.status === 'loading' && !isLatest)) && (
+                                <div className="mt-2 font-mono text-[8px] text-ink-muted border border-line/60 rounded px-1.5 py-0.5">
+                                  Engine Baseline
+                                </div>
+                              )}
+                            </div>
+
+                            {/* ── TARGET — top-right ── */}
+                            <div className={`flex flex-col items-center justify-center px-3 py-3 border-b ${isLatest ? 'border-line' : 'border-line/40'}`}>
+                              <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Target</div>
+                              <div className="font-mono font-bold text-[13px]" style={{ color: T.buy }}>
+                                {effectiveTarget != null ? fmtINR(effectiveTarget) : '—'}
+                              </div>
+                              {effectiveTarget != null && effectiveEntry != null && (
+                                <div className="font-mono text-[9px] mt-0.5" style={{ color: T.buy + 'aa' }}>
+                                  +{pctChange(effectiveEntry, effectiveTarget)}%
+                                </div>
+                              )}
+                            </div>
+
+                            {/* ── STOP LOSS — bottom-right ── */}
+                            <div className="flex flex-col items-center justify-center px-3 py-3">
+                              <div className="font-mono text-[9px] text-ink-muted uppercase tracking-widest mb-1">Stop Loss</div>
+                              <div
+                                className="font-mono font-bold text-[13px]"
+                                style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
+                              >
+                                {effectiveStop != null ? fmtINR(effectiveStop) : '—'}
+                              </div>
+                              {effectiveStop != null && effectiveEntry != null && (
+                                <div className="font-mono text-[9px] mt-0.5" style={{ color: T.sell + 'aa' }}>
+                                  {pctChange(effectiveEntry, effectiveStop)}%
+                                </div>
+                              )}
+                              {effectiveSlStatus != null && (
+                                <div
+                                  className="font-mono text-[8px] font-semibold mt-1"
+                                  style={{ color: effectiveSlStatus === 'hit' ? T.sell : T.brass }}
+                                >
+                                  {effectiveSlStatus === 'hit' ? '● Hit' : '● Active'}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                        );
+                      })}
                     </div>
                   );
                 })()}

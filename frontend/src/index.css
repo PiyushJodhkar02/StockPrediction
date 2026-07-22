@@ -29,3 +29,20 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/* Custom Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-panel-raised);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-muted);
+}
